@@ -32,9 +32,8 @@ BOOTBLOCK_FILE = DIST_DIR / "bootblock.txt"
 
 # Paths to skip
 SKIP_PATTERNS = [
-    r"\.gemini/tmp/",
     r"/private/var/folders/",
-    r"/tmp/",
+    r"^/tmp/",             # system /tmp only, not .gemini/tmp/ etc.
     r"\.cursor/projects/",
     r"\.worktrees/",
     r"/worktrees/",
