@@ -9,8 +9,14 @@ Commands:
   scan   - Scan CASS index, check git/license, generate bootblock.txt
   export - Read bootblock.txt, extract sessions from CASS DB → sessions.json
 
-Requires: CASS installed and indexed (`cass index --full`)
+Requires:
+  - Python 3.9+
+  - CASS installed and indexed (`cass index --full`)
+  - git CLI
+  - gh CLI (optional, for public/private detection of GitHub repos)
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -22,11 +28,15 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 
 # --- CASS database discovery ---
 
-def find_cass_db() -> Path | None:
+CASS_REQUIRED_TABLES = {"conversations", "messages", "workspaces", "agents"}
+
+
+def find_cass_db() -> Optional[Path]:
     """Find the CASS SQLite database."""
     # Check env var first
     data_dir = os.environ.get("CASS_DATA_DIR")
@@ -67,9 +77,60 @@ def find_cass_db() -> Path | None:
     return None
 
 
+def validate_cass_schema(db_path: Path) -> Optional[str]:
+    """Check that the CASS DB has the tables we expect. Returns error message or None."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {row[0] for row in cursor.fetchall()}
+        conn.close()
+    except sqlite3.Error as e:
+        return f"Could not read database: {e}"
+
+    missing = CASS_REQUIRED_TABLES - tables
+    if missing:
+        return (
+            f"CASS database is missing expected tables: {', '.join(sorted(missing))}. "
+            f"Found tables: {', '.join(sorted(tables))}. "
+            f"Your version of CASS may use a different schema. "
+            f"Try running: cass index --full"
+        )
+    return None
+
+
+def open_cass_db(db_path: Path) -> sqlite3.Connection:
+    """Open CASS DB with proper settings for concurrent access."""
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=10)
+        conn.row_factory = sqlite3.Row
+        # WAL mode allows reading while CASS might be writing
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e).lower():
+            print("ERROR: CASS database is locked.", file=sys.stderr)
+            print("CASS may be indexing. Wait for it to finish, or stop cass and retry.", file=sys.stderr)
+            sys.exit(1)
+        raise
+
+
+# --- Dependency checks ---
+
+def check_gh_cli() -> bool:
+    """Check if gh CLI is installed and authenticated."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
 # --- Git remote detection ---
 
-def get_git_remote_url(folder: str) -> str | None:
+def get_git_remote_url(folder: str) -> Optional[str]:
     """Get the origin remote URL for a git repo, or None."""
     try:
         result = subprocess.run(
@@ -83,19 +144,17 @@ def get_git_remote_url(folder: str) -> str | None:
     return None
 
 
-def is_github_public(remote_url: str) -> bool | None:
-    """Check if a GitHub repo is public using gh CLI. Returns None if not determinable."""
-    # Extract owner/repo from GitHub URL
-    patterns = [
-        r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$",
-    ]
-    owner_repo = None
-    for pattern in patterns:
-        match = re.search(pattern, remote_url)
-        if match:
-            owner_repo = f"{match.group(1)}/{match.group(2)}"
-            break
+def extract_github_owner_repo(remote_url: str) -> Optional[str]:
+    """Extract owner/repo from a GitHub remote URL, or None."""
+    match = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$", remote_url)
+    if match:
+        return f"{match.group(1)}/{match.group(2)}"
+    return None
 
+
+def is_github_public(remote_url: str) -> Optional[bool]:
+    """Check if a GitHub repo is public using gh CLI. Returns None if not determinable."""
+    owner_repo = extract_github_owner_repo(remote_url)
     if not owner_repo:
         return None
 
@@ -130,7 +189,7 @@ OSS_PATTERNS = {
 }
 
 
-def detect_license(folder: str) -> tuple[str | None, str | None]:
+def detect_license(folder: str) -> Tuple[Optional[str], Optional[str]]:
     """Detect license type in a folder. Returns (license_type, license_file_path)."""
     folder_path = Path(folder)
     if not folder_path.exists():
@@ -155,7 +214,7 @@ def detect_license(folder: str) -> tuple[str | None, str | None]:
 
 # --- Workspace scanning ---
 
-def scan_workspace(folder: str) -> dict:
+def scan_workspace(folder: str, has_gh: bool) -> Dict:
     """Classify a workspace folder by git visibility and license."""
     info = {
         "path": folder,
@@ -176,9 +235,11 @@ def scan_workspace(folder: str) -> dict:
     remote = get_git_remote_url(folder)
     info["git_remote"] = remote
 
-    if remote:
+    if remote and has_gh:
         public = is_github_public(remote)
         info["is_public"] = public
+    elif remote and not has_gh:
+        info["is_public"] = None
     else:
         info["is_public"] = None
 
@@ -195,6 +256,8 @@ def scan_workspace(folder: str) -> dict:
         info["reason"] = "public but no LICENSE file"
     elif info["is_public"] is False:
         info["reason"] = "private repo"
+    elif info["is_public"] is None and remote and not has_gh:
+        info["reason"] = "gh CLI not available, cannot check visibility"
     elif info["is_public"] is None and remote:
         info["reason"] = "non-GitHub remote, cannot determine visibility"
     elif remote is None:
@@ -209,7 +272,7 @@ def scan_workspace(folder: str) -> dict:
 
 # --- bootblock.txt generation ---
 
-def generate_bootblock(workspaces: list[dict], output_path: str = "bootblock.txt"):
+def generate_bootblock(workspaces: List[Dict], output_path: str = "bootblock.txt") -> str:
     """Generate the bootblock.txt allowlist file."""
     included = [w for w in workspaces if w["auto_include"]]
     excluded = [w for w in workspaces if not w["auto_include"]]
@@ -224,6 +287,8 @@ def generate_bootblock(workspaces: list[dict], output_path: str = "bootblock.txt
         "# - Edit freely: add, remove, comment/uncomment as you see fit.",
         "# - Then run: python bootblock.py export",
         "#",
+        "# NOTE: If a path contains '#', wrap it in double quotes.",
+        "#",
         "",
     ]
 
@@ -232,16 +297,18 @@ def generate_bootblock(workspaces: list[dict], output_path: str = "bootblock.txt
         for w in included:
             remote_note = ""
             if w["git_remote"] and "github.com" in w["git_remote"]:
-                match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", w["git_remote"])
-                if match:
-                    remote_note = f", {match.group(1)}"
-            lines.append(f"{w['path']}    # {w['license_type']}{remote_note}")
+                owner_repo = extract_github_owner_repo(w["git_remote"])
+                if owner_repo:
+                    remote_note = f", {owner_repo}"
+            path_str = _format_path_for_bootblock(w["path"])
+            lines.append(f"{path_str}    # {w['license_type']}{remote_note}")
         lines.append("")
 
     if excluded:
         lines.append("# EXCLUDED (uncomment to include):")
         for w in excluded:
-            lines.append(f"# {w['path']}    # {w['reason']}")
+            path_str = _format_path_for_bootblock(w["path"])
+            lines.append(f"# {path_str}    # {w['reason']}")
         lines.append("")
 
     lines.extend([
@@ -253,17 +320,38 @@ def generate_bootblock(workspaces: list[dict], output_path: str = "bootblock.txt
     return output_path
 
 
+def _format_path_for_bootblock(path: str) -> str:
+    """Quote a path if it contains characters that would confuse the parser."""
+    if "#" in path or path != path.strip():
+        return f'"{path}"'
+    return path
+
+
 # --- bootblock.txt parsing ---
 
-def parse_bootblock(path: str = "bootblock.txt") -> list[str]:
+def parse_bootblock(path: str = "bootblock.txt") -> List[str]:
     """Read bootblock.txt, return list of included folder paths."""
     included = []
-    for line in Path(path).read_text().splitlines():
+    for line_num, line in enumerate(Path(path).read_text().splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # Strip inline comments
-        path_part = line.split("#")[0].strip()
+
+        # Handle quoted paths (which may contain #)
+        if line.startswith('"'):
+            end_quote = line.find('"', 1)
+            if end_quote == -1:
+                print(f"WARNING: Unclosed quote on line {line_num} of {path}, skipping", file=sys.stderr)
+                continue
+            path_part = line[1:end_quote]
+        else:
+            # Strip inline comments (first # that's preceded by whitespace)
+            comment_match = re.search(r"\s+#", line)
+            if comment_match:
+                path_part = line[:comment_match.start()].strip()
+            else:
+                path_part = line.strip()
+
         if path_part:
             included.append(path_part)
     return included
@@ -271,36 +359,58 @@ def parse_bootblock(path: str = "bootblock.txt") -> list[str]:
 
 # --- Session export ---
 
-def export_sessions(db_path: Path, folders: list[str], output_path: str = "sessions.json"):
-    """Export conversations from CASS DB for selected workspace folders."""
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def _escape_like(s: str) -> str:
+    """Escape special characters for SQL LIKE with ESCAPE '\\'."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def export_sessions(db_path: Path, folders: List[str], output_path: str = "sessions.json") -> Dict:
+    """Export conversations from CASS DB for selected workspace folders.
+
+    Returns dict with per-folder counts and total.
+    """
+    conn = open_cass_db(db_path)
 
     all_conversations = []
+    seen_conv_ids = set()
+    folder_counts: Dict[str, int] = {}
 
     for folder in folders:
-        # Find conversations matching this workspace
-        # CASS stores workspace as a path — try exact match and prefix match
-        rows = conn.execute("""
-            SELECT c.*, w.path as workspace_path, a.slug as agent_slug, a.name as agent_name
-            FROM conversations c
-            LEFT JOIN workspaces w ON c.workspace_id = w.id
-            LEFT JOIN agents a ON c.agent_id = a.id
-            WHERE w.path = ? OR w.path LIKE ?
-        """, (folder, folder + "%")).fetchall()
+        folder_count = 0
+        escaped = _escape_like(folder)
+
+        try:
+            rows = conn.execute("""
+                SELECT c.id, c.title, c.source_path, c.started_at, c.ended_at, c.approx_tokens,
+                       w.path as workspace_path, a.slug as agent_slug, a.name as agent_name
+                FROM conversations c
+                LEFT JOIN workspaces w ON c.workspace_id = w.id
+                LEFT JOIN agents a ON c.agent_id = a.id
+                WHERE w.path = ? OR w.path LIKE ? ESCAPE '\\'
+            """, (folder, escaped + "%")).fetchall()
+        except sqlite3.OperationalError as e:
+            print(f"  WARNING: Query failed for {folder}: {e}", file=sys.stderr)
+            folder_counts[folder] = 0
+            continue
 
         for row in rows:
             conv_id = row["id"]
-            # Get messages for this conversation
-            messages = conn.execute("""
-                SELECT role, author, created_at, content, extra_json
-                FROM messages
-                WHERE conversation_id = ?
-                ORDER BY created_at ASC
-            """, (conv_id,)).fetchall()
 
-            # Get code snippets for this conversation's messages
-            message_ids = [m["rowid"] if "rowid" in m.keys() else None for m in messages]
+            # Deduplicate: nested workspace paths can match the same conversation
+            if conv_id in seen_conv_ids:
+                continue
+            seen_conv_ids.add(conv_id)
+
+            try:
+                messages = conn.execute("""
+                    SELECT role, author, created_at, content
+                    FROM messages
+                    WHERE conversation_id = ?
+                    ORDER BY created_at ASC
+                """, (conv_id,)).fetchall()
+            except sqlite3.OperationalError as e:
+                print(f"  WARNING: Could not read messages for conversation {conv_id}: {e}", file=sys.stderr)
+                continue
 
             conv_data = {
                 "id": conv_id,
@@ -322,6 +432,9 @@ def export_sessions(db_path: Path, folders: list[str], output_path: str = "sessi
                 ],
             }
             all_conversations.append(conv_data)
+            folder_count += 1
+
+        folder_counts[folder] = folder_count
 
     conn.close()
 
@@ -335,12 +448,12 @@ def export_sessions(db_path: Path, folders: list[str], output_path: str = "sessi
     }
 
     Path(output_path).write_text(json.dumps(export_data, indent=2, default=str))
-    return len(all_conversations)
+    return folder_counts
 
 
 # --- CLI ---
 
-def cmd_scan(args):
+def cmd_scan(args: argparse.Namespace) -> None:
     """Scan CASS index and generate bootblock.txt."""
     db_path = find_cass_db()
     if not db_path:
@@ -349,12 +462,25 @@ def cmd_scan(args):
         print("Or set CASS_DATA_DIR to your CASS data directory.", file=sys.stderr)
         sys.exit(1)
 
+    # Validate schema
+    schema_err = validate_cass_schema(db_path)
+    if schema_err:
+        print(f"ERROR: {schema_err}", file=sys.stderr)
+        sys.exit(1)
+
     print(f"Found CASS database: {db_path}")
 
+    # Check gh CLI availability
+    has_gh = check_gh_cli()
+    if not has_gh:
+        print("NOTE: gh CLI not found or not authenticated.")
+        print("      Will skip public/private detection for GitHub repos.")
+        print("      Install: https://cli.github.com  then run: gh auth login")
+        print()
+
     # Query all workspaces
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT DISTINCT path FROM workspaces ORDER BY path").fetchall()
+    conn = open_cass_db(db_path)
+    rows = conn.execute("SELECT DISTINCT path FROM workspaces WHERE path IS NOT NULL ORDER BY path").fetchall()
     conn.close()
 
     if not rows:
@@ -362,16 +488,20 @@ def cmd_scan(args):
         print("Have you run: cass index --full ?", file=sys.stderr)
         sys.exit(1)
 
-    folders = [row["path"] for row in rows]
+    folders = [row["path"] for row in rows if row["path"]]
     print(f"Found {len(folders)} project folders. Scanning git remotes and licenses...")
+    print()
 
     # Scan each workspace
     workspaces = []
     for i, folder in enumerate(folders, 1):
-        print(f"  [{i}/{len(folders)}] {folder}", end="", flush=True)
-        info = scan_workspace(folder)
+        short_path = folder
+        if len(short_path) > 60:
+            short_path = "..." + short_path[-57:]
+        print(f"  [{i}/{len(folders)}] {short_path}", end="", flush=True)
+        info = scan_workspace(folder, has_gh)
         tag = "INCLUDE" if info["auto_include"] else "exclude"
-        print(f" → {tag} ({info['reason']})")
+        print(f"  →  {tag} ({info['reason']})")
         workspaces.append(info)
 
     # Generate bootblock.txt
@@ -386,10 +516,12 @@ def cmd_scan(args):
     print(f"  {included} auto-included (public + OSS license)")
     print(f"  {excluded} excluded (edit the file to include any you want)")
     print()
-    print(f"Next: review {output}, then run: python bootblock.py export")
+    print(f"Next steps:")
+    print(f"  1. Review {output} — uncomment any private projects you're willing to share")
+    print(f"  2. Run: python bootblock.py export")
 
 
-def cmd_export(args):
+def cmd_export(args: argparse.Namespace) -> None:
     """Read bootblock.txt and export sessions from CASS DB."""
     bootblock_path = args.bootblock or "bootblock.txt"
     if not Path(bootblock_path).exists():
@@ -408,38 +540,71 @@ def cmd_export(args):
         print("ERROR: Could not find CASS database.", file=sys.stderr)
         sys.exit(1)
 
+    schema_err = validate_cass_schema(db_path)
+    if schema_err:
+        print(f"ERROR: {schema_err}", file=sys.stderr)
+        sys.exit(1)
+
     print(f"Exporting sessions for {len(folders)} folders...")
-    for f in folders:
-        print(f"  {f}")
+    print()
 
     output = args.output or "sessions.json"
-    count = export_sessions(db_path, folders, output)
+    folder_counts = export_sessions(db_path, folders, output)
 
-    size_mb = Path(output).stat().st_size / (1024 * 1024)
+    # Report per-folder counts
+    total = 0
+    for folder, count in folder_counts.items():
+        short = folder if len(folder) <= 60 else "..." + folder[-57:]
+        print(f"  {short}: {count} conversations")
+        total += count
+
+    size_bytes = Path(output).stat().st_size
+    if size_bytes > 1024 * 1024:
+        size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        size_str = f"{size_bytes / 1024:.0f} KB"
+
     print()
     print(f"Exported: {output}")
-    print(f"  {count} conversations")
-    print(f"  {size_mb:.1f} MB")
+    print(f"  {total} conversations total")
+    print(f"  {size_str}")
     print()
     print("Send this file to the SkillBench team for analysis.")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="SkillBench Boot Block Tool — select and export coding agent sessions",
+        epilog="Requires CASS (https://github.com/Dicklesworthstone/coding_agent_session_search)",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     # scan
-    scan_parser = subparsers.add_parser("scan", help="Scan CASS index, generate bootblock.txt")
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan CASS index, check git/license, generate bootblock.txt",
+    )
     scan_parser.add_argument("-o", "--output", help="Output file (default: bootblock.txt)")
 
     # export
-    export_parser = subparsers.add_parser("export", help="Export sessions for selected folders")
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Export sessions for selected folders → sessions.json",
+    )
     export_parser.add_argument("-b", "--bootblock", help="Path to bootblock.txt (default: bootblock.txt)")
     export_parser.add_argument("-o", "--output", help="Output file (default: sessions.json)")
 
     args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        print()
+        print("Quick start:")
+        print("  1. python bootblock.py scan       # find and classify your projects")
+        print("  2. edit bootblock.txt              # choose what to share")
+        print("  3. python bootblock.py export      # export sessions → sessions.json")
+        sys.exit(0)
+
     if args.command == "scan":
         cmd_scan(args)
     elif args.command == "export":
