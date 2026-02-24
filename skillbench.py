@@ -27,7 +27,8 @@ from pathlib import Path
 CASS_DB_DEFAULT = Path.home() / "Library" / "Application Support" / \
     "com.coding-agent-search.coding-agent-search" / "agent_search.db"
 
-BOOTBLOCK_FILE = "bootblock.txt"
+DIST_DIR = Path("dist")
+BOOTBLOCK_FILE = DIST_DIR / "bootblock.txt"
 
 # Paths to skip
 SKIP_PATTERNS = [
@@ -297,7 +298,8 @@ def cmd_scan(args):
     print(f"  Skipped (temp/transient): {skipped}")
 
     # Write bootblock.txt
-    output_path = Path(args.output) if args.output else Path(BOOTBLOCK_FILE)
+    output_path = Path(args.output) if args.output else BOOTBLOCK_FILE
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
         f.write("# SkillBench Boot Block — auto-generated from CASS index + git/license scan\n")
         f.write("# Edit this file: add/remove folders, then run `skillbench analyze`\n")
@@ -333,7 +335,7 @@ def cmd_analyze(args):
         sys.exit(1)
 
     # Parse bootblock.txt for allowed paths
-    bootblock = Path(args.bootblock) if args.bootblock else Path(BOOTBLOCK_FILE)
+    bootblock = Path(args.bootblock) if args.bootblock else BOOTBLOCK_FILE
     if not bootblock.exists():
         print(f"ERROR: {bootblock} not found. Run `skillbench scan` first.", file=sys.stderr)
         sys.exit(1)
@@ -571,7 +573,8 @@ def cmd_analyze(args):
                 "avg_turns_per_session": round(avg_turns, 1),
             },
         }
-        json_path = Path("skillbench_report.json")
+        json_path = DIST_DIR / "skillbench_report.json"
+        json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps(report, indent=2))
         print(f"  JSON report written to {json_path}")
 
@@ -731,7 +734,7 @@ def cmd_push(args):
         print("ERROR: Could not find CASS database.", file=sys.stderr)
         sys.exit(1)
 
-    bootblock = Path(args.bootblock) if args.bootblock else Path(BOOTBLOCK_FILE)
+    bootblock = Path(args.bootblock) if args.bootblock else BOOTBLOCK_FILE
     if not bootblock.exists():
         print(f"ERROR: {bootblock} not found. Run `skillbench scan` first.", file=sys.stderr)
         sys.exit(1)
@@ -799,7 +802,8 @@ def cmd_push(args):
     conn.close()
 
     # Write to file
-    output_path = Path(args.output) if args.output else Path("skillbench_export.json")
+    output_path = Path(args.output) if args.output else DIST_DIR / "skillbench_export.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(export, indent=2, default=str))
 
     total_msgs = sum(len(c["messages"]) for c in export)
@@ -832,7 +836,7 @@ def main():
     # push
     push_p = sub.add_parser("push", help="Export session data for allowed workspaces")
     push_p.add_argument("-b", "--bootblock", help=f"Bootblock file (default: {BOOTBLOCK_FILE})")
-    push_p.add_argument("-o", "--output", help="Output file (default: skillbench_export.json)")
+    push_p.add_argument("-o", "--output", help=f"Output file (default: {DIST_DIR / 'skillbench_export.json'})")
 
     args = parser.parse_args()
 
