@@ -164,6 +164,22 @@ def resolve_gemini_hashes(by_path: dict[str, dict]) -> dict[str, dict]:
     return result
 
 
+def expand_with_gemini_hashes(paths: list[str]) -> list[str]:
+    """Expand a list of real workspace paths to include Gemini hash equivalents.
+
+    When querying CASS, Gemini sessions are stored under
+    ~/.gemini/tmp/{sha256(path)}/ — not the real project path. This function
+    computes the hash for each path and appends the Gemini hash path so that
+    CASS queries return both direct and Gemini workspace entries.
+    """
+    expanded = list(paths)
+    for p in paths:
+        h = hashlib.sha256(p.encode()).hexdigest()
+        gemini_path = str(GEMINI_TMP_DIR / h)
+        expanded.append(gemini_path)
+    return expanded
+
+
 def is_skippable(path: str) -> bool:
     """True if the workspace path matches known temp/transient patterns."""
     for pat in SKIP_PATTERNS:
@@ -442,11 +458,12 @@ def cmd_analyze(args):
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
-    # Build workspace ID mapping
-    placeholders = ",".join("?" * len(allowed_paths))
+    # Build workspace ID mapping (include Gemini hash paths)
+    query_paths = expand_with_gemini_hashes(allowed_paths)
+    placeholders = ",".join("?" * len(query_paths))
     workspace_rows = conn.execute(
         f"SELECT id, path FROM workspaces WHERE path IN ({placeholders})",
-        allowed_paths
+        query_paths
     ).fetchall()
     ws_ids = [r["id"] for r in workspace_rows]
     ws_map = {r["id"]: r["path"] for r in workspace_rows}
@@ -838,10 +855,12 @@ def cmd_push(args):
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
-    placeholders = ",".join("?" * len(allowed_paths))
+    # Include Gemini hash paths so we also capture Gemini CLI sessions
+    query_paths = expand_with_gemini_hashes(allowed_paths)
+    placeholders = ",".join("?" * len(query_paths))
     workspace_rows = conn.execute(
         f"SELECT id, path FROM workspaces WHERE path IN ({placeholders})",
-        allowed_paths
+        query_paths
     ).fetchall()
     ws_ids = [r["id"] for r in workspace_rows]
 
