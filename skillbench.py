@@ -87,6 +87,29 @@ def get_workspaces(db_path: Path) -> list[dict]:
 # Git / license classification
 # ---------------------------------------------------------------------------
 
+def gemini_hash_for_path(project_path: str) -> str:
+    """Compute the Gemini CLI storage hash for a project path.
+
+    Gemini CLI does not store session data under the project directory itself.
+    Instead, it hashes the absolute project path with SHA-256 and stores
+    sessions in ~/.gemini/tmp/{hash}/chats/. This means CASS indexes Gemini
+    conversations under those hash-based workspace paths, not the real project
+    paths that every other agent uses.
+
+    To work with Gemini data in CASS, we need this hash in two places:
+      1. During scan: to reverse-map .gemini/tmp/{hash} entries back to real
+         project paths so conversation counts and agent lists are correct.
+      2. During analyze/push: to expand bootblock paths into CASS queries
+         that also match the Gemini hash workspace, so Gemini sessions are
+         included alongside sessions from other agents.
+
+    The hash algorithm matches Gemini CLI's getProjectHash() implementation:
+      crypto.createHash('sha256').update(projectRoot).digest('hex')
+    (see gemini-cli/packages/core/src/utils/paths.ts)
+    """
+    return hashlib.sha256(project_path.encode()).hexdigest()
+
+
 def _is_gemini_hash_path(workspace_path: str) -> bool:
     """True if the path is a Gemini CLI hash directory (~/.gemini/tmp/{hash})."""
     return str(GEMINI_TMP_DIR) + "/" in workspace_path or \
@@ -121,8 +144,7 @@ def resolve_gemini_hashes(by_path: dict[str, dict]) -> dict[str, dict]:
     # Build reverse lookup: sha256(real_path) -> real_path
     hash_to_path = {}
     for real_path in real_entries:
-        h = hashlib.sha256(real_path.encode()).hexdigest()
-        hash_to_path[h] = real_path
+        hash_to_path[gemini_hash_for_path(real_path)] = real_path
 
     # Also try hashing directories that exist on disk under .gemini/tmp
     # but aren't in CASS yet (gemini-only projects)
@@ -174,9 +196,7 @@ def expand_with_gemini_hashes(paths: list[str]) -> list[str]:
     """
     expanded = list(paths)
     for p in paths:
-        h = hashlib.sha256(p.encode()).hexdigest()
-        gemini_path = str(GEMINI_TMP_DIR / h)
-        expanded.append(gemini_path)
+        expanded.append(str(GEMINI_TMP_DIR / gemini_hash_for_path(p)))
     return expanded
 
 
