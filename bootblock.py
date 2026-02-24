@@ -569,7 +569,8 @@ def cmd_export(args: argparse.Namespace) -> None:
     print(f"  {total} conversations total")
     print(f"  {size_str}")
     print()
-    print("Send this file to the SkillBench team for analysis.")
+    print("Next: upload sessions.json to the shared Google Drive folder")
+    print("      and ping Matt in Slack.")
 
 
 def main() -> None:
