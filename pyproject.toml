@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skillbench"
+version = "0.1.0"
+description = "SkillBench session-collector: agentic engineering metrics from CASS data"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+[project.scripts]
+skillbench = "skillbench:main"

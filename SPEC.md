@@ -54,6 +54,10 @@ The [Dicklesworthstone/coding_agent_session_search](https://github.com/Dickleswo
 
 ### Proposed data flow
 
+The client-side pipeline enforces two privacy levels before any data reaches the server:
+- **Level 1 (workspace classification):** `scan` determines which projects are eligible based on GitHub visibility + OSS license.
+- **Level 2 (content sanitization):** After `gather`, an AI-driven skill redacts secrets, PII, and sensitive data from the raw export.
+
 ```
 Chris's machine                              SkillBench
 ──────────────────────────────               ──────────────────────────
@@ -61,35 +65,66 @@ CASS index (all agents)
     │
     ▼
 ┌──────────────────────┐
-│  Boot Block Tool     │
+│  PRIVACY LEVEL 1:    │
+│  Workspace filtering │
 │                      │
 │  1. Scan CASS index  │
 │     (all projects)   │
 │                      │
 │  2. For each project │
 │     folder, check:   │
-│     - git remote     │
+│     - gh repo view   │
 │       (public/priv)  │
-│     - LICENSE file   │
-│       (MIT/Apache =  │
+│     - licenseInfo    │
+│       (OSS SPDX =    │
 │        auto-include) │
 │     - No license or  │
-│       proprietary =  │
-│       exclude        │
+│       private repo = │
+│       auto-exclude   │
 │                      │
 │  3. Generate:        │
 │     bootblock.txt    │
-│     (editable list   │
-│      of folders)     │
+│     (editable list)  │
 │                      │
 │  4. User reviews,    │
 │     adds/removes     │
 │     folders          │
-│                      │
-│  5. Push selected    │
-│     session data     │
 └──────────┬───────────┘
-           │ HTTPS POST (raw sessions
+           │
+           ▼
+┌──────────────────────┐
+│  skillbench gather   │
+│  (export sessions    │
+│   for allowed paths) │
+└──────────┬───────────┘
+           │ dist/skillbench_export.json
+           ▼
+┌──────────────────────┐
+│  PRIVACY LEVEL 2:    │
+│  Content sanitization│
+│                      │
+│  AI agent follows    │
+│  sanitize-export     │
+│  skill to:           │
+│  - Sample export     │
+│  - Discover secrets, │
+│    PII, infra data   │
+│  - Write & run       │
+│    redaction script  │
+│  - Verify clean      │
+│                      │
+│  Output:             │
+│  dist/..._sanitized  │
+│  .json               │
+└──────────┬───────────┘
+           │ User reviews sanitized file
+           ▼
+┌──────────────────────┐
+│  skillbench push     │
+│  (uploads sanitized  │
+│   export only)       │
+└──────────┬───────────┘
+           │ HTTPS POST (sanitized sessions
            │ for selected folders only)
            ▼
     ┌─────────────┐    ┌──────────────────┐
@@ -130,7 +165,8 @@ CASS index (all agents)
 
 ### Upload loop
 
-- Each `skillbench push` sends raw sessions for the listed folders
+- Each `skillbench push` sends the **sanitized** export for the bootblock-allowed folders
+- `push` blocks if only a raw (unsanitized) export exists — the user must run the sanitize-export skill first
 - Server tracks `last_upload_timestamp` per user
 - Subsequent pushes can be incremental (only new sessions since last upload)
 - Each upload triggers an insights email summarizing what changed since last time
@@ -346,6 +382,17 @@ The extension captures keystroke-level data that CASS doesn't. For the protodash
 
 ## Privacy & Consent
 
+SkillBench enforces a **two-level privacy model** on the client side before any data leaves the user's machine:
+
+### Level 1: Workspace classification (bootblock)
+`skillbench scan` auto-classifies every workspace in the CASS index via a single `gh repo view --json isPrivate,licenseInfo` call per repo. A project is auto-included only when **both**: (a) the repo is public on GitHub, and (b) GitHub detects a recognized OSS license (SPDX ID ≠ NOASSERTION). All other projects are auto-excluded (commented out in `dist/bootblock.txt`). Users can manually override before proceeding. This ensures that session data from private or proprietary codebases is never shared by default.
+
+### Level 2: Content sanitization (AI-driven)
+Even for allowed workspaces, raw conversation text may contain secrets (API keys, tokens), PII (emails, names), infrastructure details (private IPs, internal hostnames), file system paths, and other sensitive data. After `skillbench gather`, the bundled `sanitize-export` skill (`skills/sanitize-export/SKILL.md`) guides an AI agent through: sampling the export → discovering sensitive patterns using a generic taxonomy → writing a tailored redaction script → running and verifying the output. The sanitized file (`dist/skillbench_export_sanitized.json`) is what gets shared via `skillbench push`.
+
+This two-level approach means: Level 1 filters **which projects** are included, Level 2 filters **what content** is safe to share within those projects.
+
+### Other considerations
 - CASS data contains full conversation transcripts including code snippets
 - Chris is voluntarily sharing — get explicit written consent anyway
 - For cross-user features: anonymize by default, opt-in for name visibility
@@ -396,6 +443,31 @@ The extension captures keystroke-level data that CASS doesn't. For the protodash
 When a user has both keystroke AND session data, we can correlate:
 - "You delegated this task but manually rewrote 60% of the output → your prompts may need more specificity"
 - "Your ai_human_ratio jumped 20% this week AND your prompt specificity improved → the two are connected"
+
+---
+
+## Gemini CLI Hash Resolution
+
+Gemini CLI stores session data in `~/.gemini/tmp/{sha256(project_root)}/chats/` rather than directly under the project directory. CASS indexes these as workspace paths, which means Gemini conversations appear attributed to opaque hash directories instead of real project folders.
+
+### How it works
+- Gemini CLI computes `SHA-256(absoluteProjectPath)` to derive a per-project storage directory (confirmed in `gemini-cli/packages/core/src/utils/paths.ts:317-318`).
+- During `skillbench scan`, after aggregating CASS data into `by_path`, the `resolve_gemini_hashes()` function:
+  1. Separates `.gemini/tmp/{hash}` entries from real workspace paths
+  2. Computes `SHA-256(real_path)` for every known real workspace path to build a reverse lookup
+  3. Matches Gemini hash entries to their real project paths
+  4. Merges conversation counts, agent lists, and timestamps into the real workspace entry
+  5. Drops resolved Gemini entries; keeps unresolved ones (they'll be skipped as non-project dirs)
+- This means a project using both Claude Code and Gemini CLI will show both agents in its scan output.
+
+### Query expansion in analyze/gather
+- `scan` resolves hashes at merge time, but `analyze` and `gather` also need to capture Gemini sessions at query time.
+- For each bootblock-allowed path, these commands compute `gemini_hash_for_path(path)` and include `~/.gemini/tmp/{hash}` as an additional workspace path in the CASS query.
+- This ensures Gemini CLI conversations are included in metrics and exports even if the hash wasn't resolved during scan (e.g., the bootblock was manually edited).
+
+### Limitations
+- SHA-256 is not reversible, so Gemini-only projects (no other agent used) that don't appear in CASS under their real path cannot be resolved.
+- Path must match exactly (case-sensitive, no trailing slash differences) for the hash to match.
 
 ---
 

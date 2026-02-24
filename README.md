@@ -6,46 +6,121 @@ Boot block tool + session-level analysis pipeline for SkillBench.
 
 A local CLI tool that sits on top of [CASS](https://github.com/Dicklesworthstone/coding_agent_session_search) and lets users:
 1. Browse their indexed coding agent sessions (Claude Code, Cursor, Copilot, Gemini, Aider, etc.)
-2. Auto-classify projects by git visibility + OSS license (MIT/Apache = auto-include, proprietary/missing = exclude)
+2. Auto-classify projects by git visibility + OSS license
 3. Review/edit an allowlist of folders to share
-4. Export selected session data for SkillBench analysis
+4. Compute agentic engineering metrics locally
+5. Export selected session data for SkillBench analysis
+
+## How it works
+
+The workflow enforces a **two-level privacy model**: Level 1 filters *which projects* are included (workspace classification via `scan`), and Level 2 filters *what content* is safe to share (AI-driven sanitization after `gather`). Both levels run entirely on your machine before any data is uploaded.
+
+### 1. `skillbench scan` — classify workspaces (Privacy Level 1)
+
+Queries the CASS SQLite database for all indexed workspace paths, then classifies each one:
+
+1. **Gemini hash resolution.** Gemini CLI stores sessions in `~/.gemini/tmp/{sha256(project_path)}/` instead of the project directory. CASS indexes these as workspace paths, so Gemini conversations appear under opaque hash directories. Before classification, `scan` reverses the hashes by computing SHA-256 for every known real workspace path, matches them to Gemini entries, and merges conversation counts, agent lists, and timestamps into the real project entries. Unresolved hashes (Gemini-only projects with no other agent session) are skipped.
+
+2. **Skip filtering.** Paths matching known non-project patterns are dropped: macOS temp dirs (`/private/var/folders/`), Cursor internal dirs, git worktrees, bare home directory, and any remaining `.gemini/` paths.
+
+3. **GitHub classification.** For each surviving path, a single `gh repo view --json isPrivate,licenseInfo` call checks both visibility and license. GitHub's built-in [Licensee](https://github.com/licensee/licensee) gem matches the LICENSE file against known OSS licenses and returns an SPDX ID.
+
+4. **Auto-include rule.** A project is auto-included only when **both** conditions are met:
+   - The repo is **public on GitHub**
+   - GitHub detects a **recognized OSS license** (SPDX key ≠ `other`)
+
+   Projects that fail either check are excluded by default but can be manually uncommented in the bootblock.
+
+5. **Output.** Writes `dist/bootblock.txt` — an editable allowlist of project paths with inline comments showing license, agents used, and conversation counts.
+
+### 2. `skillbench analyze` — compute metrics
+
+Reads the bootblock for allowed paths, then queries CASS for conversations and messages in those workspaces. For each allowed path, the query also includes its Gemini hash equivalent (`~/.gemini/tmp/{sha256(path)}`) so that Gemini CLI sessions are captured alongside sessions from other agents.
+
+Computes agentic engineering metrics across three tiers:
+- **Tier 1 — Usage patterns:** sessions/week, active days, session duration, agent diversity
+- **Tier 2 — Prompting sophistication:** prompt length, context provision rate, multi-step rate
+- **Tier 3 — Iteration efficiency:** first-attempt success, correction rate, avg turns
+
+Places you on an agentic engineering ladder (L1 Dabbler → L5 Maestro) with personalized level-up suggestions. Use `--json` to also write `dist/skillbench_report.json`.
+
+### 3. `skillbench gather` — export session data
+
+Same bootblock + Gemini hash expansion as `analyze`. Exports full conversation data (messages, timestamps, agents) for allowed workspaces to `dist/skillbench_export.json`.
+
+### 4. Sanitize before sharing (Privacy Level 2)
+
+Even after Level 1 filtering, the raw export may contain API keys, email addresses, private IPs, home directory paths, and other sensitive data embedded in conversation text. Use the bundled `sanitize-export` skill with your AI agent to intelligently scan and redact the export:
+
+1. Point your AI agent at `skills/sanitize-export/SKILL.md`
+2. The agent samples your data, discovers sensitive patterns specific to your export
+3. It writes a tailored sanitization script, runs it, and verifies the output
+4. Review `dist/skillbench_export_sanitized.json` before sharing
+
+This approach adapts to each user's data rather than relying on brittle regex patterns.
+
+### 5. `skillbench push` — upload to SkillBench API
+
+Not yet implemented. Will upload the sanitized export (`dist/skillbench_export_sanitized.json`) to the SkillBench server for analysis and dashboard generation. Blocks if only a raw (unsanitized) export exists — you must run the sanitization skill first.
 
 ## Quick start
 
-### Prerequisites
-- Python 3.9+
-- [CASS](https://github.com/Dicklesworthstone/coding_agent_session_search) installed and indexed
-- `git` CLI
-- `gh` CLI (optional but recommended — enables public/private repo detection)
-
-### Step 1: Index your sessions with CASS
 ```bash
+# Prerequisites: install CASS and index your sessions
+cargo install cass
 cass index --full
+
+# Install skillbench
+pip install -e .
+
+# 1. Scan and classify all workspaces → dist/bootblock.txt
+#    (Privacy Level 1: only public + OSS-licensed repos auto-included)
+skillbench scan
+
+# 2. Review/edit dist/bootblock.txt, then compute metrics
+skillbench analyze --json
+
+# 3. Export session data for allowed workspaces
+skillbench gather
+
+# 4. Sanitize the export (Privacy Level 2: redact secrets, PII, etc.)
+#    Point your AI agent at skills/sanitize-export/SKILL.md
+#    → produces dist/skillbench_export_sanitized.json
+
+# 5. Upload sanitized data (not yet implemented)
+# skillbench push
 ```
 
-### Step 2: Scan and classify your projects
-```bash
-python bootblock.py scan
-```
-This checks each project for git remotes and OSS licenses, then generates `bootblock.txt` — an editable allowlist. Public repos with MIT/Apache/BSD licenses are auto-included. Everything else is excluded by default.
+All generated output goes to `dist/` (gitignored).
 
-### Step 3: Review and edit
-Open `bootblock.txt` in any editor. Uncomment projects you're willing to share. Comment out anything you want to exclude. ~2 minutes.
+### Gemini CLI note
 
-### Step 4: Export
-```bash
-python bootblock.py export
-```
-This extracts full conversation data (all agents, all messages) for your selected folders into `sessions.json`.
+Gemini CLI sessions are automatically detected and attributed to the correct project. The hash resolution in `scan` and the query expansion in `analyze`/`gather` both use `gemini_hash_for_path()` — a SHA-256 of the absolute project path, matching Gemini CLI's own `getProjectHash()` implementation.
 
-### Step 5: Upload
-Upload `sessions.json` to the shared Google Drive folder (https://drive.google.com/drive/folders/1rjZnWp3xio6a9zVfD7YdOJt9fIPPySsL?usp=sharing) and ping Matt in Slack.
+## Privacy & data policy
+
+SkillBench uses a **two-level privacy model** — workspace-level filtering first, then content-level sanitization — so sensitive data is excluded at two independent checkpoints before anything leaves your machine.
+
+### Level 1: Workspace classification (bootblock)
+`skillbench scan` auto-classifies every workspace found in the CASS index. A project is auto-included **only** when it is a public GitHub repo **and** GitHub detects a recognized OSS license. Everything else — private repos, unlicensed projects, non-GitHub repos — is auto-excluded (commented out in `dist/bootblock.txt`). You can manually override inclusions and exclusions before proceeding.
+
+### Level 2: Content sanitization (AI-driven)
+Even for allowed workspaces, the raw conversation export may contain API keys, email addresses, private IPs, home directory paths, and other secrets embedded in prompts and responses. After `skillbench gather`, the bundled `sanitize-export` skill (`skills/sanitize-export/SKILL.md`) guides your AI agent through sampling the data, discovering sensitive patterns, writing a tailored redaction script, and verifying the result. The sanitized file (`dist/skillbench_export_sanitized.json`) is what gets shared via `skillbench push`.
+
+### Additional guarantees
+- **All processing is local.** `scan`, `analyze`, and `gather` run entirely on your machine. No data is sent anywhere unless you explicitly run `push`.
+- **No telemetry, no auto-sync.** There is no background upload, no analytics, and no network calls except `gh` (GitHub CLI) during `scan` for repo classification.
+
+When server-side upload is implemented:
+- Explicit user consent will be required before any data leaves your machine.
+- Uploaded session data will be used **only** to compute your agentic engineering metrics and generate your personal insights dashboard.
+- Cross-user comparisons (e.g., ladder percentiles) will use **anonymized, aggregated statistics only** — never raw conversation text from other users.
+- Your data will not be sold, shared with third parties, or used to train AI models.
+- You may request deletion of your uploaded data at any time.
 
 ## Status
 
-**Boot block tool is functional.** Server-side analysis pipeline is next.
-
-See [SPEC.md](./SPEC.md) for the full design (architecture, metrics, dashboard wireframes, compatibility with skillmeter).
+See [SPEC.md](./SPEC.md) for the full design.
 
 Customer 0: Chris Sells (Gastown Discord).
 
@@ -59,7 +134,3 @@ This is a **complementary data layer**, not a replacement:
 | Session | session-collector (this repo) | Conversation-level | How effectively you direct AI |
 
 See the "Compatibility" section in SPEC.md for integration details.
-
-## Team
-
-Questions, concerns, strong opinions — open an issue or comment on the spec. This is intentionally rough. The point is to get something concrete everyone can react to.
