@@ -891,9 +891,43 @@ def cmd_push(args):
 
     ws_placeholders = ",".join("?" * len(ws_ids))
 
+    # Build reverse map: Gemini hash workspace -> real project path
+    gemini_to_real = {}
+    for real_path in allowed_paths:
+        gem_hash_path = str(GEMINI_TMP_DIR / gemini_hash_for_path(real_path))
+        gemini_to_real[gem_hash_path] = real_path
+
+    def resolve_workspace(ws_path: str) -> str:
+        """Map Gemini hash workspace back to real project path."""
+        if _is_gemini_hash_path(ws_path):
+            return gemini_to_real.get(ws_path, ws_path)
+        return ws_path
+
+    # Build workspace -> git remote lookup (using resolved paths)
+    ws_remotes = {}
+    for r in workspace_rows:
+        resolved = resolve_workspace(r["path"])
+        if resolved not in ws_remotes:
+            remote = git_remote_url(resolved) if Path(resolved).is_dir() else None
+            ws_remotes[resolved] = remote
+
+    # Normalize CASS message roles to a clean set: user, agent, tool
+    # CASS uses inconsistent roles (e.g. "gemini" instead of "agent",
+    # "developer" for system prompts, "info"/"error" for metadata).
+    ROLE_MAP = {
+        "user": "user",
+        "agent": "agent",
+        "tool": "tool",
+        "gemini": "agent",      # Gemini responses stored with role=gemini
+        "developer": "user",    # system/developer prompts → user
+    }
+    # Roles to drop entirely (not meaningful for analysis)
+    DROP_ROLES = {"info", "error"}
+
     # Export conversations with messages
     conversations = conn.execute(f"""
-        SELECT c.id, c.started_at, c.ended_at, c.source_path, c.title,
+        SELECT c.id, c.external_id, c.started_at, c.ended_at,
+               c.source_path, c.title, c.approx_tokens,
                a.slug as agent, w.path as workspace
         FROM conversations c
         JOIN agents a ON c.agent_id = a.id
@@ -905,20 +939,34 @@ def cmd_push(args):
     export = []
     for conv in conversations:
         messages = conn.execute("""
-            SELECT role, author, created_at, content
+            SELECT role, created_at, content
             FROM messages
             WHERE conversation_id = ?
             ORDER BY idx
         """, (conv["id"],)).fetchall()
 
+        normalized_msgs = []
+        for m in messages:
+            if m["role"] in DROP_ROLES:
+                continue
+            normalized_msgs.append({
+                "role": ROLE_MAP.get(m["role"], "agent"),
+                "created_at": m["created_at"],
+                "content": m["content"],
+            })
+
+        resolved_ws = resolve_workspace(conv["workspace"])
         export.append({
-            "conversation_id": conv["id"],
+            "session_id": conv["external_id"],
             "agent": conv["agent"],
-            "workspace": conv["workspace"],
+            "workspace": resolved_ws,
+            "git_remote": ws_remotes.get(resolved_ws),
+            "source_path": conv["source_path"],
             "title": conv["title"],
             "started_at": conv["started_at"],
             "ended_at": conv["ended_at"],
-            "messages": [dict(m) for m in messages],
+            "approx_tokens": conv["approx_tokens"],
+            "messages": normalized_msgs,
         })
 
     conn.close()

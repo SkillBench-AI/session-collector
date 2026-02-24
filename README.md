@@ -72,6 +72,20 @@ All generated output goes to `dist/` (gitignored).
 
 Gemini CLI sessions are automatically detected and attributed to the correct project. The hash resolution in `scan` and the query expansion in `analyze`/`push` both use `gemini_hash_for_path()` — a SHA-256 of the absolute project path, matching Gemini CLI's own `getProjectHash()` implementation.
 
+## Privacy & data policy
+
+- **All processing is local.** `scan`, `analyze`, and `push` run entirely on your machine. No data is sent anywhere unless you explicitly share the export file.
+- **You control what's shared.** The bootblock is an editable allowlist — only uncommented paths are included in `analyze` and `push`. Private repos and unlicensed projects are excluded by default.
+- **Export contains full conversation text.** The `push` export includes your prompts, agent responses, and code snippets for the selected workspaces. Review `dist/skillbench_export.json` before sharing.
+- **No telemetry, no auto-sync.** There is no background upload, no analytics, and no network calls except `gh` (GitHub CLI) during `scan` for repo classification.
+
+When server-side upload is implemented:
+- Explicit user consent will be required before any data leaves your machine.
+- Uploaded session data will be used **only** to compute your agentic engineering metrics and generate your personal insights dashboard.
+- Cross-user comparisons (e.g., ladder percentiles) will use **anonymized, aggregated statistics only** — never raw conversation text from other users.
+- Your data will not be sold, shared with third parties, or used to train AI models.
+- You may request deletion of your uploaded data at any time.
+
 ## Status
 
 See [SPEC.md](./SPEC.md) for the full design.
