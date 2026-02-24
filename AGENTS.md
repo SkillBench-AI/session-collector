@@ -14,6 +14,7 @@ Single-file Python CLI (`skillbench.py`) that classifies coding agent workspaces
 - **Auto-include requires both**: public GitHub repo AND a recognized OSS license (SPDX ID ≠ NOASSERTION) detected from a LICENSE file. No exceptions.
 - **Non-GitHub repos cannot auto-include.** They fall back to manifest-only detection (pyproject.toml, package.json, etc.) which is informational only.
 - **One `gh` call per repo** handles both visibility and license. Do not split into separate calls.
+- **Gemini CLI hash resolution**: Gemini stores sessions under `~/.gemini/tmp/{sha256(project_root)}/`. During scan, `resolve_gemini_hashes()` reverses these hashes by computing SHA-256 of all known workspace paths and merges Gemini conversations into the real project entry. This runs before classification.
 
 ## Commands
 ```

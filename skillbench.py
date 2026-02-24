@@ -10,6 +10,7 @@ Sits on top of CASS (coding_agent_session_search) and lets users:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -30,9 +31,11 @@ CASS_DB_DEFAULT = Path.home() / "Library" / "Application Support" / \
 DIST_DIR = Path("dist")
 BOOTBLOCK_FILE = DIST_DIR / "bootblock.txt"
 
-# Paths to skip
+GEMINI_TMP_DIR = Path.home() / ".gemini" / "tmp"
+
+# Paths to skip (after Gemini hash resolution)
 SKIP_PATTERNS = [
-    r"\.gemini/",          # Gemini CLI chat storage, not real projects
+    r"\.gemini/",          # unresolved Gemini hash dirs
     r"/private/var/folders/",
     r"^/tmp/",             # system /tmp only
     r"\.cursor/projects/",
@@ -83,6 +86,83 @@ def get_workspaces(db_path: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Git / license classification
 # ---------------------------------------------------------------------------
+
+def _is_gemini_hash_path(workspace_path: str) -> bool:
+    """True if the path is a Gemini CLI hash directory (~/.gemini/tmp/{hash})."""
+    return str(GEMINI_TMP_DIR) + "/" in workspace_path or \
+           workspace_path.startswith(str(GEMINI_TMP_DIR))
+
+
+def resolve_gemini_hashes(by_path: dict[str, dict]) -> dict[str, dict]:
+    """Resolve Gemini CLI hash directories back to real project paths.
+
+    Gemini CLI stores sessions in ~/.gemini/tmp/{sha256(project_root)}/chats/.
+    This function reverses the hash by computing SHA-256 for all known
+    non-Gemini workspace paths, then merges Gemini conversation data into
+    the real workspace entries.
+    """
+    # Separate Gemini hash paths from real paths
+    gemini_entries = {}  # hash -> aggregated data
+    real_entries = {}    # path -> aggregated data
+
+    for path, info in by_path.items():
+        if _is_gemini_hash_path(path):
+            # Extract the hash from the path (last component of .gemini/tmp/{hash})
+            parts = path.split(str(GEMINI_TMP_DIR) + "/")
+            if len(parts) == 2:
+                hash_part = parts[1].split("/")[0]
+                gemini_entries[hash_part] = info
+        else:
+            real_entries[path] = info
+
+    if not gemini_entries:
+        return by_path
+
+    # Build reverse lookup: sha256(real_path) -> real_path
+    hash_to_path = {}
+    for real_path in real_entries:
+        h = hashlib.sha256(real_path.encode()).hexdigest()
+        hash_to_path[h] = real_path
+
+    # Also try hashing directories that exist on disk under .gemini/tmp
+    # but aren't in CASS yet (gemini-only projects)
+    for hash_dir in gemini_entries:
+        if hash_dir not in hash_to_path:
+            # Check if any common project directories hash to this
+            # We can't reverse SHA-256, so unmatched hashes stay unresolved
+            pass
+
+    # Merge Gemini data into real workspace entries
+    resolved = 0
+    unresolved_entries = {}
+    for gem_hash, gem_info in gemini_entries.items():
+        real_path = hash_to_path.get(gem_hash)
+        if real_path:
+            # Merge into existing real entry
+            entry = real_entries[real_path]
+            entry["agents"].extend(gem_info["agents"])
+            entry["total_conversations"] += gem_info["total_conversations"]
+            entry["total_user_messages"] += gem_info["total_user_messages"]
+            if gem_info["first_session"] and (not entry["first_session"] or gem_info["first_session"] < entry["first_session"]):
+                entry["first_session"] = gem_info["first_session"]
+            if gem_info["last_session"] and (not entry["last_session"] or gem_info["last_session"] > entry["last_session"]):
+                entry["last_session"] = gem_info["last_session"]
+            resolved += 1
+        else:
+            # Keep unresolved Gemini entries as-is (will be skipped later)
+            orig_path = str(GEMINI_TMP_DIR / gem_hash)
+            unresolved_entries[orig_path] = gem_info
+
+    if resolved:
+        print(f"  Resolved {resolved} Gemini hash dir(s) to real project paths")
+    if unresolved_entries:
+        print(f"  {len(unresolved_entries)} Gemini hash dir(s) could not be resolved")
+
+    # Return merged result
+    result = dict(real_entries)
+    result.update(unresolved_entries)
+    return result
+
 
 def is_skippable(path: str) -> bool:
     """True if the workspace path matches known temp/transient patterns."""
@@ -218,13 +298,16 @@ def cmd_scan(args):
         if w["last_session"] and (not entry["last_session"] or w["last_session"] > entry["last_session"]):
             entry["last_session"] = w["last_session"]
 
+    # Resolve Gemini hash directories to real project paths
+    by_path = resolve_gemini_hashes(by_path)
+
     # Classify each workspace
     included = []
     excluded = []
     skipped = 0
 
     total = len(by_path)
-    print(f"Found {total} workspace paths. Classifying...")
+    print(f"Classifying {total} workspace paths...")
 
     for i, (path, info) in enumerate(sorted(by_path.items(), key=lambda x: -x[1]["total_conversations"])):
         if is_skippable(path):

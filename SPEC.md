@@ -399,6 +399,26 @@ When a user has both keystroke AND session data, we can correlate:
 
 ---
 
+## Gemini CLI Hash Resolution
+
+Gemini CLI stores session data in `~/.gemini/tmp/{sha256(project_root)}/chats/` rather than directly under the project directory. CASS indexes these as workspace paths, which means Gemini conversations appear attributed to opaque hash directories instead of real project folders.
+
+### How it works
+- Gemini CLI computes `SHA-256(absoluteProjectPath)` to derive a per-project storage directory (confirmed in `gemini-cli/packages/core/src/utils/paths.ts:317-318`).
+- During `skillbench scan`, after aggregating CASS data into `by_path`, the `resolve_gemini_hashes()` function:
+  1. Separates `.gemini/tmp/{hash}` entries from real workspace paths
+  2. Computes `SHA-256(real_path)` for every known real workspace path to build a reverse lookup
+  3. Matches Gemini hash entries to their real project paths
+  4. Merges conversation counts, agent lists, and timestamps into the real workspace entry
+  5. Drops resolved Gemini entries; keeps unresolved ones (they'll be skipped as non-project dirs)
+- This means a project using both Claude Code and Gemini CLI will show both agents in its scan output.
+
+### Limitations
+- SHA-256 is not reversible, so Gemini-only projects (no other agent used) that don't appear in CASS under their real path cannot be resolved.
+- Path must match exactly (case-sensitive, no trailing slash differences) for the hash to match.
+
+---
+
 ## Risk: What If CASS Data Isn't Rich Enough?
 
 CASS gives us conversation transcripts but the schema normalizes somewhat aggressively. If the `content` field lacks tool call details or code diffs, we may need to:
