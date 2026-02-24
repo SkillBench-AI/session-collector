@@ -13,7 +13,9 @@ A local CLI tool that sits on top of [CASS](https://github.com/Dicklesworthstone
 
 ## How it works
 
-### 1. `skillbench scan` — classify workspaces
+The workflow enforces a **two-level privacy model**: Level 1 filters *which projects* are included (workspace classification via `scan`), and Level 2 filters *what content* is safe to share (AI-driven sanitization after `gather`). Both levels run entirely on your machine before any data is uploaded.
+
+### 1. `skillbench scan` — classify workspaces (Privacy Level 1)
 
 Queries the CASS SQLite database for all indexed workspace paths, then classifies each one:
 
@@ -46,9 +48,9 @@ Places you on an agentic engineering ladder (L1 Dabbler → L5 Maestro) with per
 
 Same bootblock + Gemini hash expansion as `analyze`. Exports full conversation data (messages, timestamps, agents) for allowed workspaces to `dist/skillbench_export.json`.
 
-### 4. Sanitize before sharing
+### 4. Sanitize before sharing (Privacy Level 2)
 
-The raw export may contain API keys, email addresses, private IPs, home directory paths, and other sensitive data. Use the bundled `sanitize-export` skill with your AI agent to intelligently scan and redact the export:
+Even after Level 1 filtering, the raw export may contain API keys, email addresses, private IPs, home directory paths, and other sensitive data embedded in conversation text. Use the bundled `sanitize-export` skill with your AI agent to intelligently scan and redact the export:
 
 1. Point your AI agent at `skills/sanitize-export/SKILL.md`
 2. The agent samples your data, discovers sensitive patterns specific to your export
@@ -59,7 +61,7 @@ This approach adapts to each user's data rather than relying on brittle regex pa
 
 ### 5. `skillbench push` — upload to SkillBench API
 
-Not yet implemented. Will upload the sanitized export to the SkillBench server for analysis and dashboard generation.
+Not yet implemented. Will upload the sanitized export (`dist/skillbench_export_sanitized.json`) to the SkillBench server for analysis and dashboard generation. Blocks if only a raw (unsanitized) export exists — you must run the sanitization skill first.
 
 ## Quick start
 
@@ -72,6 +74,7 @@ cass index --full
 pip install -e .
 
 # 1. Scan and classify all workspaces → dist/bootblock.txt
+#    (Privacy Level 1: only public + OSS-licensed repos auto-included)
 skillbench scan
 
 # 2. Review/edit dist/bootblock.txt, then compute metrics
@@ -80,8 +83,12 @@ skillbench analyze --json
 # 3. Export session data for allowed workspaces
 skillbench gather
 
-# 4. Sanitize the export — use the skill with your AI agent
-#    (see skills/sanitize-export/SKILL.md)
+# 4. Sanitize the export (Privacy Level 2: redact secrets, PII, etc.)
+#    Point your AI agent at skills/sanitize-export/SKILL.md
+#    → produces dist/skillbench_export_sanitized.json
+
+# 5. Upload sanitized data (not yet implemented)
+# skillbench push
 ```
 
 All generated output goes to `dist/` (gitignored).
@@ -92,9 +99,16 @@ Gemini CLI sessions are automatically detected and attributed to the correct pro
 
 ## Privacy & data policy
 
-- **All processing is local.** `scan`, `analyze`, and `push` run entirely on your machine. No data is sent anywhere unless you explicitly share the export file.
-- **You control what's shared.** The bootblock is an editable allowlist — only uncommented paths are included in `analyze` and `push`. Private repos and unlicensed projects are excluded by default.
-- **Export contains full conversation text.** The `gather` export includes your prompts, agent responses, and code snippets for the selected workspaces. Always run the sanitization skill before sharing — it redacts API keys, email addresses, private IPs, home directory paths, and secrets.
+SkillBench uses a **two-level privacy model** — workspace-level filtering first, then content-level sanitization — so sensitive data is excluded at two independent checkpoints before anything leaves your machine.
+
+### Level 1: Workspace classification (bootblock)
+`skillbench scan` auto-classifies every workspace found in the CASS index. A project is auto-included **only** when it is a public GitHub repo **and** GitHub detects a recognized OSS license. Everything else — private repos, unlicensed projects, non-GitHub repos — is auto-excluded (commented out in `dist/bootblock.txt`). You can manually override inclusions and exclusions before proceeding.
+
+### Level 2: Content sanitization (AI-driven)
+Even for allowed workspaces, the raw conversation export may contain API keys, email addresses, private IPs, home directory paths, and other secrets embedded in prompts and responses. After `skillbench gather`, the bundled `sanitize-export` skill (`skills/sanitize-export/SKILL.md`) guides your AI agent through sampling the data, discovering sensitive patterns, writing a tailored redaction script, and verifying the result. The sanitized file (`dist/skillbench_export_sanitized.json`) is what gets shared via `skillbench push`.
+
+### Additional guarantees
+- **All processing is local.** `scan`, `analyze`, and `gather` run entirely on your machine. No data is sent anywhere unless you explicitly run `push`.
 - **No telemetry, no auto-sync.** There is no background upload, no analytics, and no network calls except `gh` (GitHub CLI) during `scan` for repo classification.
 
 When server-side upload is implemented:

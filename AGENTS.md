@@ -10,12 +10,16 @@ Single-file Python CLI (`skillbench.py`) that classifies coding agent workspaces
 - `SPEC.md` — full design spec (read-only reference, do not modify without asking)
 - `dist/` — all generated output (gitignored)
 
+## Privacy model (two levels)
+1. **Workspace classification (bootblock).** `skillbench scan` auto-includes only public GitHub repos with a recognized OSS license. Everything else is auto-excluded (commented out in `dist/bootblock.txt`). Users can manually override. This ensures only openly-licensed project sessions are shared by default.
+2. **Content sanitization (skill-driven).** Even for allowed workspaces, conversation text may contain secrets, PII, or infrastructure details. The `sanitize-export` skill (`skills/sanitize-export/SKILL.md`) guides an AI agent to discover and redact sensitive data from the raw export before sharing. This runs between `gather` (raw export) and `push` (upload).
+
 ## Key design decisions
 - **License detection uses the GitHub API** (`gh repo view --json isPrivate,licenseInfo`), not local file parsing. GitHub's Licensee gem does the matching. Do not add local regex-based license detection for GitHub repos.
 - **Auto-include requires both**: public GitHub repo AND a recognized OSS license (SPDX ID ≠ NOASSERTION) detected from a LICENSE file. No exceptions.
 - **Non-GitHub repos cannot auto-include.** They fall back to manifest-only detection (pyproject.toml, package.json, etc.) which is informational only.
 - **One `gh` call per repo** handles both visibility and license. Do not split into separate calls.
-- **Gemini CLI hash resolution**: Gemini stores sessions under `~/.gemini/tmp/{sha256(project_root)}/`. During scan, `resolve_gemini_hashes()` reverses these hashes by computing SHA-256 of all known workspace paths and merges Gemini conversations into the real project entry. This runs before classification.
+- **Gemini CLI hash resolution**: Gemini stores sessions under `~/.gemini/tmp/{sha256(project_root)}/`. During scan, `resolve_gemini_hashes()` reverses these hashes by computing SHA-256 of all known workspace paths and merges Gemini conversations into the real project entry. This runs before classification. Additionally, `analyze` and `gather` expand each bootblock path to also query its Gemini hash equivalent (`gemini_hash_for_path()`), so Gemini sessions are captured at query time even if they weren't merged during scan.
 
 ## Commands
 ```
