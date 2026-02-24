@@ -39,7 +39,7 @@ python bootblock.py export
 This extracts full conversation data (all agents, all messages) for your selected folders into `sessions.json`.
 
 ### Step 5: Upload
-Upload `sessions.json` to the shared Google Drive folder and ping Matt in Slack.
+Upload `sessions.json` to the shared Google Drive folder (https://drive.google.com/drive/folders/1rjZnWp3xio6a9zVfD7YdOJt9fIPPySsL?usp=sharing) and ping Matt in Slack.
 
 ## Status
 
