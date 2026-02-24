@@ -125,7 +125,7 @@ def classify_github_repo(remote_url: str) -> dict | None:
     licenses and returns SPDX-compliant IDs.  This replaces both local regex
     license detection and the separate visibility check for GitHub repos.
 
-    Returns dict with keys: is_public, license_spdx_id, license_name
+    Returns dict with keys: is_public, license_key, license_name
     or None if not a GitHub repo or the `gh` CLI fails.
     """
     slug = _extract_github_slug(remote_url)
@@ -139,14 +139,14 @@ def classify_github_repo(remote_url: str) -> dict | None:
         if result.returncode == 0:
             data = json.loads(result.stdout)
             license_info = data.get("licenseInfo")
-            spdx_id = None
+            license_key = None
             license_name = None
             if license_info:
-                spdx_id = license_info.get("spdxId")
-                license_name = license_info.get("name")
+                license_key = license_info.get("key")    # e.g. "mit", "apache-2.0", "other"
+                license_name = license_info.get("name")  # e.g. "MIT License"
             return {
                 "is_public": not data.get("isPrivate", True),
-                "license_spdx_id": spdx_id,
+                "license_key": license_key,
                 "license_name": license_name,
             }
     except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
@@ -245,12 +245,12 @@ def cmd_scan(args):
         if gh:
             # GitHub API: single call for visibility + license (Licensee + SPDX)
             public = gh["is_public"]
-            spdx_id = gh["license_spdx_id"]
+            license_key = gh["license_key"]
             license_name = gh["license_name"]
-            # A real SPDX ID (not NOASSERTION) means GitHub's Licensee matched
+            # A real license key (not "other") means GitHub's Licensee matched
             # the LICENSE file to a known OSS license.
-            oss = spdx_id is not None and spdx_id != "NOASSERTION"
-            license_id = spdx_id if oss else license_name
+            oss = license_key is not None and license_key != "other"
+            license_id = license_name or license_key
         else:
             # Non-GitHub repo: no reliable license detection available
             public = None
@@ -276,9 +276,9 @@ def cmd_scan(args):
             if gh:
                 if not public:
                     reasons.append("private repo")
-                if spdx_id is None:
+                if license_key is None:
                     reasons.append("no LICENSE file")
-                elif spdx_id == "NOASSERTION":
+                elif license_key == "other":
                     reasons.append("unrecognized license in LICENSE file")
             else:
                 if not remote:
