@@ -6,15 +6,44 @@ Boot block tool + session-level analysis pipeline for SkillBench.
 
 A local CLI tool that sits on top of [CASS](https://github.com/Dicklesworthstone/coding_agent_session_search) and lets users:
 1. Browse their indexed coding agent sessions (Claude Code, Cursor, Copilot, Gemini, Aider, etc.)
-2. Auto-classify projects by git visibility + OSS license (MIT/Apache = auto-include, proprietary/missing = exclude)
+2. Auto-classify projects by git visibility + OSS license
 3. Review/edit an allowlist of folders to share
-4. Push selected session data to SkillBench for analysis
+4. Compute agentic engineering metrics locally
+5. Export selected session data for SkillBench analysis
 
-Users get back a dashboard showing their agentic engineering metrics — processed by our server-side analysis pipeline.
+## Auto-include algorithm
+
+A project is auto-included only when **both** conditions are met:
+- The repo is **public on GitHub** (checked via `gh repo view`)
+- GitHub detects a **recognized OSS license** in the LICENSE file (via its built-in [Licensee](https://github.com/licensee/licensee) gem, returning a valid SPDX ID)
+
+Projects that fail either check are excluded by default but can be manually uncommented in the bootblock.
+
+## Usage
+
+```bash
+# Prerequisites: install CASS and index your sessions
+cargo install cass
+cass index --full
+
+# Install skillbench
+pip install -e .
+
+# 1. Scan and classify all workspaces → dist/bootblock.txt
+skillbench scan
+
+# 2. Review/edit dist/bootblock.txt, then compute metrics
+skillbench analyze --json
+
+# 3. Export session data for allowed workspaces
+skillbench push
+```
+
+All generated output goes to `dist/` (gitignored).
 
 ## Status
 
-**Spec phase.** See [SPEC.md](./SPEC.md) for the full design.
+See [SPEC.md](./SPEC.md) for the full design.
 
 Customer 0: Chris Sells (Gastown Discord).
 
@@ -28,7 +57,3 @@ This is a **complementary data layer**, not a replacement:
 | Session | session-collector (this repo) | Conversation-level | How effectively you direct AI |
 
 See the "Compatibility" section in SPEC.md for integration details.
-
-## Team
-
-Questions, concerns, strong opinions — open an issue or comment on the spec. This is intentionally rough. The point is to get something concrete everyone can react to.
