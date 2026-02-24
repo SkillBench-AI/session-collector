@@ -4,7 +4,8 @@
 Single-file Python CLI (`skillbench.py`) that classifies coding agent workspaces by GitHub visibility + OSS license, then computes agentic engineering metrics from CASS session data.
 
 ## Architecture
-- `skillbench.py` — entire CLI: scan, analyze, push commands
+- `skillbench.py` — entire CLI: scan, analyze, gather, push commands
+- `skills/sanitize-export/` — skill + script to redact sensitive data from exports
 - `pyproject.toml` — packaging config (pip-installable, entry point: `skillbench:main`)
 - `SPEC.md` — full design spec (read-only reference, do not modify without asking)
 - `dist/` — all generated output (gitignored)
@@ -20,8 +21,12 @@ Single-file Python CLI (`skillbench.py`) that classifies coding agent workspaces
 ```
 skillbench scan     # classify workspaces → dist/bootblock.txt
 skillbench analyze  # compute metrics from CASS data (--json for dist/skillbench_report.json)
-skillbench push     # export sessions → dist/skillbench_export.json
+skillbench gather   # export sessions → dist/skillbench_export.json
+skillbench push     # upload sanitized data to SkillBench API (not yet implemented)
 ```
+
+After `gather`, users should sanitize the export before sharing by using the
+`sanitize-export` skill (`skills/sanitize-export/SKILL.md`) with their AI agent.
 
 ## Dependencies
 - Python ≥ 3.10 (stdlib only, no pip dependencies)

@@ -351,6 +351,7 @@ The extension captures keystroke-level data that CASS doesn't. For the protodash
 - For cross-user features: anonymize by default, opt-in for name visibility
 - Mentor matching: strictly opt-in on both sides
 - The Gastown Discord launch needs a clear data policy
+- **Client-side sanitization**: `skillbench gather` exports raw data; the `sanitize-export` skill (under `skills/`) instructs an AI agent to intelligently scan the export for secrets, PII, and sensitive data, then write a tailored redaction script. Users run `skillbench gather` → AI-driven sanitize → review → `skillbench push`. This adapts to each user's data rather than relying on brittle regex patterns.
 
 ---
 

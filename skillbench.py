@@ -847,8 +847,8 @@ def print_level_up_guide(level, score, context_rate, first_attempt, correction, 
     print()
 
 
-def cmd_push(args):
-    """Export session data for allowed workspaces (stub for server push)."""
+def cmd_gather(args):
+    """Export session data for allowed workspaces to a local file."""
     db_path = find_cass_db()
     if not db_path:
         print("ERROR: Could not find CASS database.", file=sys.stderr)
@@ -979,8 +979,54 @@ def cmd_push(args):
     total_msgs = sum(len(c["messages"]) for c in export)
     print(f"Exported {len(export)} conversations ({total_msgs} messages) to {output_path}")
     print()
-    print("Server push not yet implemented — this file can be manually shared.")
-    print("Future: `skillbench push` will upload to SkillBench API.")
+    print("⚠  IMPORTANT: Sanitize before sharing!")
+    print("   The export contains raw conversation data that may include secrets,")
+    print("   API keys, PII, internal URLs, and other sensitive information.")
+    print()
+    skill_path = "skills/sanitize-export/SKILL.md"
+    print("   Ask your AI agent to run the sanitize-export skill:")
+    print()
+    print(f"     Read {skill_path} and follow its instructions to sanitize {output_path}")
+    print()
+    print("   The skill contains a comprehensive taxonomy of sensitive data categories")
+    print("   (secrets, PII, infrastructure, analytics, org data, git, compliance, etc.)")
+    print("   and will guide the agent through discovery, reporting, and redaction.")
+    print()
+    print("   After sanitization, run `skillbench push` to upload the clean data.")
+
+
+def cmd_push(args):
+    """Upload sanitized session data to SkillBench API (not yet implemented)."""
+    sanitized = DIST_DIR / "skillbench_export_sanitized.json"
+    raw_export = DIST_DIR / "skillbench_export.json"
+    skill_path = "skills/sanitize-export/SKILL.md"
+
+    if sanitized.exists():
+        print(f"Found sanitized export: {sanitized}")
+        print("Server push is not yet implemented — check back soon.")
+        return
+
+    if raw_export.exists():
+        print(f"⚠  Found raw export ({raw_export}) but no sanitized version.")
+        print(f"   You must sanitize before pushing.")
+        print()
+        print("   Ask your AI agent:")
+        print()
+        print(f"     Read {skill_path} and follow its instructions to sanitize {raw_export}")
+        print()
+        print("   The skill guides the agent through a comprehensive check of 10 categories")
+        print("   (secrets, PII, infrastructure, file paths, analytics, org data, git info,")
+        print("   communications, runtime/debug data, and compliance-sensitive data).")
+        print()
+        print("   After sanitization, run `skillbench push` again.")
+    else:
+        print("No export found. Run `skillbench gather` first.")
+        print()
+        print("Full workflow:")
+        print("  1. skillbench scan       → classify workspaces")
+        print("  2. skillbench gather     → export session data")
+        print(f"  3. Sanitize: ask your AI agent to read {skill_path}")
+        print("  4. skillbench push       → upload sanitized data")
 
 
 # ---------------------------------------------------------------------------
@@ -1003,10 +1049,13 @@ def main():
     analyze_p.add_argument("-b", "--bootblock", help=f"Bootblock file (default: {BOOTBLOCK_FILE})")
     analyze_p.add_argument("--json", action="store_true", help="Also write JSON report")
 
+    # gather
+    gather_p = sub.add_parser("gather", help="Export session data for allowed workspaces")
+    gather_p.add_argument("-b", "--bootblock", help=f"Bootblock file (default: {BOOTBLOCK_FILE})")
+    gather_p.add_argument("-o", "--output", help=f"Output file (default: {DIST_DIR / 'skillbench_export.json'})")
+
     # push
-    push_p = sub.add_parser("push", help="Export session data for allowed workspaces")
-    push_p.add_argument("-b", "--bootblock", help=f"Bootblock file (default: {BOOTBLOCK_FILE})")
-    push_p.add_argument("-o", "--output", help=f"Output file (default: {DIST_DIR / 'skillbench_export.json'})")
+    sub.add_parser("push", help="Upload sanitized session data to SkillBench API")
 
     args = parser.parse_args()
 
@@ -1014,6 +1063,8 @@ def main():
         cmd_scan(args)
     elif args.command == "analyze":
         cmd_analyze(args)
+    elif args.command == "gather":
+        cmd_gather(args)
     elif args.command == "push":
         cmd_push(args)
     else:

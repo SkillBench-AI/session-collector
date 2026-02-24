@@ -42,9 +42,24 @@ Computes agentic engineering metrics across three tiers:
 
 Places you on an agentic engineering ladder (L1 Dabbler → L5 Maestro) with personalized level-up suggestions. Use `--json` to also write `dist/skillbench_report.json`.
 
-### 3. `skillbench push` — export session data
+### 3. `skillbench gather` — export session data
 
 Same bootblock + Gemini hash expansion as `analyze`. Exports full conversation data (messages, timestamps, agents) for allowed workspaces to `dist/skillbench_export.json`.
+
+### 4. Sanitize before sharing
+
+The raw export may contain API keys, email addresses, private IPs, home directory paths, and other sensitive data. Use the bundled `sanitize-export` skill with your AI agent to intelligently scan and redact the export:
+
+1. Point your AI agent at `skills/sanitize-export/SKILL.md`
+2. The agent samples your data, discovers sensitive patterns specific to your export
+3. It writes a tailored sanitization script, runs it, and verifies the output
+4. Review `dist/skillbench_export_sanitized.json` before sharing
+
+This approach adapts to each user's data rather than relying on brittle regex patterns.
+
+### 5. `skillbench push` — upload to SkillBench API
+
+Not yet implemented. Will upload the sanitized export to the SkillBench server for analysis and dashboard generation.
 
 ## Quick start
 
@@ -63,20 +78,23 @@ skillbench scan
 skillbench analyze --json
 
 # 3. Export session data for allowed workspaces
-skillbench push
+skillbench gather
+
+# 4. Sanitize the export — use the skill with your AI agent
+#    (see skills/sanitize-export/SKILL.md)
 ```
 
 All generated output goes to `dist/` (gitignored).
 
 ### Gemini CLI note
 
-Gemini CLI sessions are automatically detected and attributed to the correct project. The hash resolution in `scan` and the query expansion in `analyze`/`push` both use `gemini_hash_for_path()` — a SHA-256 of the absolute project path, matching Gemini CLI's own `getProjectHash()` implementation.
+Gemini CLI sessions are automatically detected and attributed to the correct project. The hash resolution in `scan` and the query expansion in `analyze`/`gather` both use `gemini_hash_for_path()` — a SHA-256 of the absolute project path, matching Gemini CLI's own `getProjectHash()` implementation.
 
 ## Privacy & data policy
 
 - **All processing is local.** `scan`, `analyze`, and `push` run entirely on your machine. No data is sent anywhere unless you explicitly share the export file.
 - **You control what's shared.** The bootblock is an editable allowlist — only uncommented paths are included in `analyze` and `push`. Private repos and unlicensed projects are excluded by default.
-- **Export contains full conversation text.** The `push` export includes your prompts, agent responses, and code snippets for the selected workspaces. Review `dist/skillbench_export.json` before sharing.
+- **Export contains full conversation text.** The `gather` export includes your prompts, agent responses, and code snippets for the selected workspaces. Always run the sanitization skill before sharing — it redacts API keys, email addresses, private IPs, home directory paths, and secrets.
 - **No telemetry, no auto-sync.** There is no background upload, no analytics, and no network calls except `gh` (GitHub CLI) during `scan` for repo classification.
 
 When server-side upload is implemented:
