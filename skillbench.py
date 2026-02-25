@@ -17,9 +17,11 @@ import re
 import sqlite3
 import subprocess
 import sys
-from collections import defaultdict
+import time
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1030,6 +1032,355 @@ def cmd_push(args):
 
 
 # ---------------------------------------------------------------------------
+# GitHub data collection helpers
+# ---------------------------------------------------------------------------
+
+def _extract_repo_slug(git_remote_url: str) -> str | None:
+    """Convert https://github.com/owner/repo.git → owner/repo"""
+    try:
+        parsed = urlparse(git_remote_url)
+        if not parsed.hostname or "github.com" not in parsed.hostname:
+            return None
+        path = parsed.path.strip("/")
+        if path.endswith(".git"):
+            path = path[:-4]
+        parts = path.split("/")
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+    except Exception:
+        pass
+    return None
+
+
+def _gh_api(endpoint: str, params: dict = None) -> dict | list | None:
+    """Call gh api and return parsed JSON."""
+    cmd = ["gh", "api", endpoint, "--method", "GET"]
+    if params:
+        for k, v in params.items():
+            cmd.extend(["-f", f"{k}={v}"])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            if "404" in result.stderr or "Not Found" in result.stderr:
+                return None
+            if "409" in result.stderr:  # empty repo
+                return None
+            print(f"  WARNING: gh api error for {endpoint}: {result.stderr.strip()[:120]}")
+            return None
+        return json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        print(f"  WARNING: timeout for {endpoint}")
+        return None
+    except json.JSONDecodeError:
+        return None
+
+
+def _repos_from_export(export_path: Path) -> Counter:
+    """Extract GitHub repo slugs and session counts from an export file."""
+    with open(export_path) as f:
+        sessions = json.load(f)
+    counts = Counter()
+    for s in sessions:
+        r = s.get("git_remote")
+        if r:
+            slug = _extract_repo_slug(r)
+            if slug:
+                counts[slug] += 1
+    return counts
+
+
+def _infer_author_from_export(export_path: Path) -> str | None:
+    """Try to infer the GitHub username from repo ownership in the export."""
+    counts = _repos_from_export(export_path)
+    # Most repos are owned by the user — find the most common owner
+    owners = Counter()
+    for slug in counts:
+        owner = slug.split("/")[0]
+        owners[owner] += counts[slug]
+    if owners:
+        return owners.most_common(1)[0][0]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# collect-commits command
+# ---------------------------------------------------------------------------
+
+def cmd_collect_commits(args):
+    """Fetch commit history from GitHub for repos in the export."""
+    export_path = Path(args.export)
+    if not export_path.exists():
+        print(f"Export not found: {export_path}")
+        print("Run `skillbench gather` first, then sanitize the export.")
+        return
+
+    author = args.author
+    if not author:
+        author = _infer_author_from_export(export_path)
+        if not author:
+            print("Could not infer GitHub username from export.")
+            print("Provide it explicitly: skillbench collect-commits --author USERNAME")
+            return
+        print(f"Inferred GitHub author: {author}")
+
+    since = args.since or "2020-01-01T00:00:00Z"
+    sleep_ms = 0.05  # 50ms between API calls
+
+    # Check gh CLI
+    try:
+        subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
+    except FileNotFoundError:
+        print("ERROR: gh CLI not found. Install with: brew install gh")
+        sys.exit(1)
+
+    print(f"Loading export from {export_path}...")
+    remote_counts = _repos_from_export(export_path)
+    print(f"Found {len(remote_counts)} GitHub repos across {sum(remote_counts.values())} sessions\n")
+
+    repos = {}
+    repos_no_commits = []
+    total_commits = 0
+    total_api_calls = 0
+
+    for slug, session_count in remote_counts.most_common():
+        print(f"[{slug}] ({session_count} sessions)")
+
+        # Fetch commits
+        all_commits = []
+        page = 1
+        while True:
+            print(f"    page {page}...", end=" ", flush=True)
+            data = _gh_api(
+                f"repos/{slug}/commits",
+                {"author": author, "since": since, "per_page": "100", "page": str(page)},
+            )
+            time.sleep(sleep_ms)
+            total_api_calls += 1
+
+            if not data or not isinstance(data, list) or len(data) == 0:
+                print("done")
+                break
+
+            for item in data:
+                ci = item.get("commit", {})
+                ai = ci.get("author", {})
+                all_commits.append({
+                    "sha": item.get("sha", "")[:12],
+                    "date": ai.get("date", ""),
+                    "message": ci.get("message", "").split("\n")[0][:120],
+                })
+            print(f"{len(data)} commits")
+            if len(data) < 100:
+                break
+            page += 1
+
+        if not all_commits:
+            print(f"  → 0 commits by {author}")
+            repos_no_commits.append(slug)
+            repos[slug] = {"commits": [], "total_commits": 0, "sessions_count": session_count}
+            continue
+
+        # Fetch stats per commit
+        print(f"  → {len(all_commits)} commits, fetching stats...")
+        enriched = []
+        for i, commit in enumerate(all_commits):
+            if (i + 1) % 20 == 0 or i == 0:
+                print(f"    stats {i+1}/{len(all_commits)}...", flush=True)
+            data = _gh_api(f"repos/{slug}/commits/{commit['sha']}")
+            time.sleep(sleep_ms)
+            total_api_calls += 1
+            stats = {}
+            if data and "stats" in data:
+                s = data["stats"]
+                stats = {"additions": s.get("additions", 0), "deletions": s.get("deletions", 0),
+                         "files_changed": len(data.get("files", []))}
+            else:
+                stats = {"additions": 0, "deletions": 0, "files_changed": 0}
+            enriched.append({**commit, **stats})
+
+        total_add = sum(c.get("additions", 0) for c in enriched)
+        total_del = sum(c.get("deletions", 0) for c in enriched)
+        print(f"  → {len(enriched)} commits, +{total_add}/-{total_del} lines\n")
+        total_commits += len(enriched)
+
+        repos[slug] = {"commits": enriched, "total_commits": len(enriched), "sessions_count": session_count}
+
+    output = {
+        "collected_at": datetime.now(timezone.utc).isoformat(),
+        "author": author,
+        "since": since,
+        "repos": repos,
+        "repos_no_commits": repos_no_commits,
+        "total_commits": total_commits,
+        "total_api_calls": total_api_calls,
+    }
+
+    output_path = Path(args.output) if args.output else DIST_DIR / "commit_data.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output, indent=2))
+
+    size_kb = output_path.stat().st_size / 1024
+    print(f"\n{'='*60}")
+    print(f"Commit data written to {output_path} ({size_kb:.0f} KB)")
+    print(f"  {total_commits} total commits across {len(repos) - len(repos_no_commits)} repos")
+    print(f"  {len(repos_no_commits)} repos with 0 commits by {author}")
+    print(f"  {total_api_calls} GitHub API calls made")
+
+
+# ---------------------------------------------------------------------------
+# collect-prs command
+# ---------------------------------------------------------------------------
+
+def cmd_collect_prs(args):
+    """Fetch pull request history from GitHub for repos in the export."""
+    export_path = Path(args.export)
+    if not export_path.exists():
+        print(f"Export not found: {export_path}")
+        print("Run `skillbench gather` first, then sanitize the export.")
+        return
+
+    author = args.author
+    if not author:
+        author = _infer_author_from_export(export_path)
+        if not author:
+            print("Could not infer GitHub username from export.")
+            print("Provide it explicitly: skillbench collect-prs --author USERNAME")
+            return
+        print(f"Inferred GitHub author: {author}")
+
+    since = args.since or "2020-01-01T00:00:00Z"
+    sleep_ms = 0.05
+
+    # Check gh CLI
+    try:
+        subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
+    except FileNotFoundError:
+        print("ERROR: gh CLI not found. Install with: brew install gh")
+        sys.exit(1)
+
+    print(f"Loading export from {export_path}...")
+    remote_counts = _repos_from_export(export_path)
+    print(f"Found {len(remote_counts)} GitHub repos across {sum(remote_counts.values())} sessions\n")
+
+    repos = {}
+    repos_no_prs = []
+    total_prs = 0
+    total_api_calls = 0
+
+    for slug, session_count in remote_counts.most_common():
+        print(f"[{slug}] ({session_count} sessions)")
+
+        all_prs = []
+        page = 1
+        while True:
+            print(f"    page {page}...", end=" ", flush=True)
+            data = _gh_api(
+                f"repos/{slug}/pulls",
+                {"state": "all", "per_page": "100", "page": str(page), "sort": "created", "direction": "desc"},
+            )
+            time.sleep(sleep_ms)
+            total_api_calls += 1
+
+            if not data or not isinstance(data, list) or len(data) == 0:
+                print("done")
+                break
+
+            for pr in data:
+                user = pr.get("user", {})
+                if user.get("login", "").lower() != author.lower():
+                    continue
+                created = pr.get("created_at", "")
+                if created < since:
+                    continue
+                all_prs.append({
+                    "number": pr.get("number"),
+                    "title": pr.get("title", "")[:150],
+                    "state": pr.get("state", ""),
+                    "created_at": created,
+                    "updated_at": pr.get("updated_at", ""),
+                    "merged_at": pr.get("merged_at"),
+                    "closed_at": pr.get("closed_at"),
+                    "draft": pr.get("draft", False),
+                    "html_url": pr.get("html_url", ""),
+                })
+
+            count_on_page = len(data)
+            author_count = sum(1 for pr in data if pr.get("user", {}).get("login", "").lower() == author.lower())
+            print(f"{count_on_page} PRs ({author_count} by {author})")
+
+            if count_on_page < 100:
+                break
+            page += 1
+
+        if not all_prs:
+            print(f"  → 0 PRs by {author}")
+            repos_no_prs.append(slug)
+            repos[slug] = {"pull_requests": [], "total_prs": 0, "sessions_count": session_count}
+            continue
+
+        # Fetch detailed stats per PR
+        print(f"  → {len(all_prs)} PRs, fetching details...")
+        for i, pr in enumerate(all_prs):
+            if (i + 1) % 10 == 0 or i == 0:
+                print(f"    details {i+1}/{len(all_prs)}...", flush=True)
+            data = _gh_api(f"repos/{slug}/pulls/{pr['number']}")
+            time.sleep(sleep_ms)
+            total_api_calls += 1
+            if data:
+                pr["additions"] = data.get("additions", 0)
+                pr["deletions"] = data.get("deletions", 0)
+                pr["changed_files"] = data.get("changed_files", 0)
+                pr["comments"] = data.get("comments", 0)
+                pr["review_comments"] = data.get("review_comments", 0)
+                pr["commits"] = data.get("commits", 0)
+                pr["merged_at"] = data.get("merged_at")
+                labels = data.get("labels", [])
+                pr["labels"] = [l.get("name", "") for l in labels] if labels else []
+
+        merged = sum(1 for p in all_prs if p.get("merged_at"))
+        open_count = sum(1 for p in all_prs if p.get("state") == "open")
+        closed = sum(1 for p in all_prs if p.get("state") == "closed" and not p.get("merged_at"))
+        total_add = sum(p.get("additions", 0) for p in all_prs)
+        total_del = sum(p.get("deletions", 0) for p in all_prs)
+        print(f"  → {len(all_prs)} PRs ({merged} merged, {open_count} open, {closed} closed), +{total_add}/-{total_del} lines\n")
+        total_prs += len(all_prs)
+
+        repos[slug] = {
+            "pull_requests": all_prs,
+            "total_prs": len(all_prs),
+            "merged": merged, "open": open_count, "closed_unmerged": closed,
+            "sessions_count": session_count,
+        }
+
+    total_merged = sum(r.get("merged", 0) for r in repos.values())
+    total_open = sum(r.get("open", 0) for r in repos.values())
+
+    output = {
+        "collected_at": datetime.now(timezone.utc).isoformat(),
+        "author": author,
+        "since": since,
+        "repos": repos,
+        "repos_no_prs": repos_no_prs,
+        "total_prs": total_prs,
+        "total_merged": total_merged,
+        "total_open": total_open,
+        "total_api_calls": total_api_calls,
+    }
+
+    output_path = Path(args.output) if args.output else DIST_DIR / "pr_data.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output, indent=2))
+
+    size_kb = output_path.stat().st_size / 1024
+    print(f"\n{'='*60}")
+    print(f"PR data written to {output_path} ({size_kb:.0f} KB)")
+    print(f"  {total_prs} total PRs across {len(repos) - len(repos_no_prs)} repos")
+    print(f"  {total_merged} merged, {total_open} open")
+    print(f"  {len(repos_no_prs)} repos with 0 PRs by {author}")
+    print(f"  {total_api_calls} GitHub API calls made")
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -1057,6 +1408,22 @@ def main():
     # push
     sub.add_parser("push", help="Upload sanitized session data to SkillBench API")
 
+    # collect-commits
+    cc_p = sub.add_parser("collect-commits", help="Fetch commit history from GitHub for repos in export")
+    cc_p.add_argument("-e", "--export", default=str(DIST_DIR / "skillbench_export_sanitized.json"),
+                      help="Path to export JSON file")
+    cc_p.add_argument("-a", "--author", help="GitHub username (auto-detected from export if omitted)")
+    cc_p.add_argument("-s", "--since", help="Fetch commits since this ISO date (default: 2020-01-01)")
+    cc_p.add_argument("-o", "--output", help=f"Output file (default: {DIST_DIR / 'commit_data.json'})")
+
+    # collect-prs
+    cp_p = sub.add_parser("collect-prs", help="Fetch PR history from GitHub for repos in export")
+    cp_p.add_argument("-e", "--export", default=str(DIST_DIR / "skillbench_export_sanitized.json"),
+                      help="Path to export JSON file")
+    cp_p.add_argument("-a", "--author", help="GitHub username (auto-detected from export if omitted)")
+    cp_p.add_argument("-s", "--since", help="Fetch PRs since this ISO date (default: 2020-01-01)")
+    cp_p.add_argument("-o", "--output", help=f"Output file (default: {DIST_DIR / 'pr_data.json'})")
+
     args = parser.parse_args()
 
     if args.command == "scan":
@@ -1067,6 +1434,10 @@ def main():
         cmd_gather(args)
     elif args.command == "push":
         cmd_push(args)
+    elif args.command == "collect-commits":
+        cmd_collect_commits(args)
+    elif args.command == "collect-prs":
+        cmd_collect_prs(args)
     else:
         parser.print_help()
 
