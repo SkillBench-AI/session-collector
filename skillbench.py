@@ -938,8 +938,39 @@ def cmd_gather(args):
         ORDER BY c.started_at
     """, ws_ids).fetchall()
 
+    full_mode = getattr(args, "full", False)
+    raw_success = 0
+    raw_fallback = 0
+
     export = []
     for conv in conversations:
+        resolved_ws = resolve_workspace(conv["workspace"])
+        source_path = conv["source_path"]
+
+        # --full mode: read raw JSONL for full tool payloads
+        if full_mode and source_path:
+            raw_msgs = _parse_raw_session(source_path)
+            if raw_msgs is not None:
+                raw_success += 1
+                export.append({
+                    "session_id": conv["external_id"],
+                    "agent": conv["agent"],
+                    "workspace": resolved_ws,
+                    "git_remote": ws_remotes.get(resolved_ws),
+                    "source_path": source_path,
+                    "title": conv["title"],
+                    "started_at": conv["started_at"],
+                    "ended_at": conv["ended_at"],
+                    "approx_tokens": conv["approx_tokens"],
+                    "messages": raw_msgs,
+                    "full_fidelity": True,
+                })
+                continue
+            else:
+                raw_fallback += 1
+                # Fall through to CASS flat content
+
+        # Default: read from CASS messages table (flat content)
         messages = conn.execute("""
             SELECT role, created_at, content
             FROM messages
@@ -957,33 +988,52 @@ def cmd_gather(args):
                 "content": m["content"],
             })
 
-        resolved_ws = resolve_workspace(conv["workspace"])
         export.append({
             "session_id": conv["external_id"],
             "agent": conv["agent"],
             "workspace": resolved_ws,
             "git_remote": ws_remotes.get(resolved_ws),
-            "source_path": conv["source_path"],
+            "source_path": source_path,
             "title": conv["title"],
             "started_at": conv["started_at"],
             "ended_at": conv["ended_at"],
             "approx_tokens": conv["approx_tokens"],
             "messages": normalized_msgs,
+            "full_fidelity": False,
         })
 
     conn.close()
 
     # Write to file
-    output_path = Path(args.output) if args.output else DIST_DIR / "skillbench_export.json"
+    if args.output:
+        output_path = Path(args.output)
+    elif full_mode:
+        output_path = DIST_DIR / "skillbench_export_full.json"
+    else:
+        output_path = DIST_DIR / "skillbench_export.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(export, indent=2, default=str))
 
     total_msgs = sum(len(c["messages"]) for c in export)
     print(f"Exported {len(export)} conversations ({total_msgs} messages) to {output_path}")
+
+    if full_mode:
+        full_count = sum(1 for c in export if c.get("full_fidelity"))
+        flat_count = len(export) - full_count
+        print(f"  Full-fidelity (raw JSONL): {full_count} sessions")
+        if flat_count:
+            print(f"  Fell back to CASS flat content: {flat_count} sessions")
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+        print(f"  Export size: {size_mb:.1f} MB")
+
     print()
     print("⚠  IMPORTANT: Sanitize before sharing!")
     print("   The export contains raw conversation data that may include secrets,")
     print("   API keys, PII, internal URLs, and other sensitive information.")
+    if full_mode:
+        print()
+        print("   ⚠  FULL-FIDELITY MODE: The export includes complete code diffs,")
+        print("   file contents, and command outputs. Sanitization is CRITICAL.")
     print()
     skill_path = "skills/sanitize-export/SKILL.md"
     print("   Ask your AI agent to run the sanitize-export skill:")
@@ -1029,6 +1079,160 @@ def cmd_push(args):
         print("  2. skillbench gather     → export session data")
         print(f"  3. Sanitize: ask your AI agent to read {skill_path}")
         print("  4. skillbench push       → upload sanitized data")
+
+
+# ---------------------------------------------------------------------------
+# Raw JSONL session parsing (bypasses CASS flattening)
+# ---------------------------------------------------------------------------
+
+# Message types in raw JSONL that carry conversation content
+_CONTENT_TYPES = {"user", "assistant"}
+
+
+def _resolve_persisted_output(text: str, source_path: str) -> str:
+    """Replace <persisted-output> references with actual file contents."""
+    if "<persisted-output>" not in text:
+        return text
+
+    import re as _re
+    session_dir = Path(source_path).parent / Path(source_path).stem
+    # Pattern: <persisted-output>\nOutput too large (XXX). Full output saved to: /path/to/file\n</persisted-output>
+    # Or just check for the saved-to path and read it
+    match = _re.search(r"Full output saved to: (.+?)[\n<]", text)
+    if match:
+        ref_path = Path(match.group(1).strip())
+        if ref_path.exists():
+            try:
+                return ref_path.read_text(errors="replace")
+            except Exception:
+                pass
+
+    # Also check tool-results/ directory in the session dir
+    if session_dir.is_dir():
+        tool_results_dir = session_dir / "tool-results"
+        if tool_results_dir.is_dir():
+            # Try to match by tool_use_id in the text
+            id_match = _re.search(r"toolu_[A-Za-z0-9]+", text)
+            if id_match:
+                tool_file = tool_results_dir / f"{id_match.group(0)}.txt"
+                if tool_file.exists():
+                    try:
+                        return tool_file.read_text(errors="replace")
+                    except Exception:
+                        pass
+
+    return text  # Return original if can't resolve
+
+
+def _parse_raw_session(source_path: str) -> list[dict] | None:
+    """Parse a Claude Code raw JSONL session file into structured messages.
+
+    Returns a list of messages preserving full tool_use blocks, or None
+    if the file can't be read. Each message has:
+      - role: "user" or "assistant"
+      - timestamp: ISO timestamp string
+      - content: structured content (list of blocks or string)
+
+    Content blocks can be:
+      - {"type": "text", "text": "..."}
+      - {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+      - {"type": "tool_result", "tool_use_id": "...", "content": "...", "is_error": bool}
+      - {"type": "thinking", "thinking": "..."}
+    """
+    path = Path(source_path)
+    if not path.exists():
+        return None
+
+    try:
+        messages = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = obj.get("type", "")
+                if msg_type not in _CONTENT_TYPES:
+                    continue
+
+                msg = obj.get("message", {})
+                role = msg.get("role", msg_type)
+                timestamp = obj.get("timestamp", "")
+                content = msg.get("content", "")
+
+                # Normalize role
+                if role == "user" or msg_type == "user":
+                    role = "user"
+                else:
+                    role = "assistant"
+
+                # Process content blocks
+                if isinstance(content, list):
+                    processed = []
+                    for block in content:
+                        if not isinstance(block, dict):
+                            processed.append(block)
+                            continue
+
+                        block_type = block.get("type", "")
+
+                        if block_type == "text":
+                            text = block.get("text", "")
+                            text = _resolve_persisted_output(text, source_path)
+                            processed.append({"type": "text", "text": text})
+
+                        elif block_type == "tool_use":
+                            processed.append({
+                                "type": "tool_use",
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "input": block.get("input", {}),
+                            })
+
+                        elif block_type == "tool_result":
+                            result_content = block.get("content", "")
+                            # Resolve persisted outputs in tool results
+                            if isinstance(result_content, str):
+                                result_content = _resolve_persisted_output(
+                                    result_content, source_path
+                                )
+                            processed.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.get("tool_use_id", ""),
+                                "content": result_content,
+                                "is_error": block.get("is_error", False),
+                            })
+
+                        elif block_type == "thinking":
+                            processed.append({
+                                "type": "thinking",
+                                "thinking": block.get("thinking", ""),
+                            })
+
+                        else:
+                            # Preserve unknown block types as-is
+                            processed.append(block)
+
+                    content = processed
+
+                elif isinstance(content, str):
+                    content = _resolve_persisted_output(content, source_path)
+
+                messages.append({
+                    "role": role,
+                    "timestamp": timestamp,
+                    "content": content,
+                })
+
+        return messages if messages else None
+
+    except Exception as e:
+        print(f"  WARNING: Could not parse {source_path}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1404,6 +1608,10 @@ def main():
     gather_p = sub.add_parser("gather", help="Export session data for allowed workspaces")
     gather_p.add_argument("-b", "--bootblock", help=f"Bootblock file (default: {BOOTBLOCK_FILE})")
     gather_p.add_argument("-o", "--output", help=f"Output file (default: {DIST_DIR / 'skillbench_export.json'})")
+    gather_p.add_argument("--full", action="store_true",
+                          help="Full-fidelity export: read raw JSONL session files to preserve "
+                               "complete tool_use payloads (code diffs, edit contents, command outputs). "
+                               "Without this flag, uses CASS flat content (tool blocks stubbed).")
 
     # push
     sub.add_parser("push", help="Upload sanitized session data to SkillBench API")
