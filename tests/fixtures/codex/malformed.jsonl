@@ -1,0 +1,4 @@
+{"timestamp":"2025-09-30T15:42:36.190Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello from codex"}]}}
+NOT VALID JSON {{{{ broken line
+{"timestamp":"2025-09-30T15:42:40.000Z","type":"event_msg","payload":{"type":"token_count","input_tokens":500,"output_tokens":1000}}
+{"timestamp":"2025-09-30T15:43:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"Hello! How can I help?"}]}}

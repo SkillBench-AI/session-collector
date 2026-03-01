@@ -1,0 +1,4 @@
+[
+  {"role": "user", "content": "What is Rust's ownership model?", "timestamp": "2026-02-28T12:00:00Z"},
+  {"role": "assistant", "content": "Rust's ownership model ensures memory safety without garbage collection. Each value has exactly one owner, and the value is dropped when the owner goes out of scope.", "timestamp": "2026-02-28T12:00:05Z"}
+]

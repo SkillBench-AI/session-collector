@@ -949,7 +949,7 @@ def cmd_gather(args):
 
         # --full mode: read raw JSONL for full tool payloads
         if full_mode and source_path:
-            raw_msgs = _parse_raw_session(source_path)
+            raw_msgs = _parse_raw_session(source_path, conv["agent"])
             if raw_msgs is not None:
                 raw_success += 1
                 export.append({
@@ -1124,13 +1124,13 @@ def _resolve_persisted_output(text: str, source_path: str) -> str:
     return text  # Return original if can't resolve
 
 
-def _parse_raw_session(source_path: str) -> list[dict] | None:
+def _parse_raw_claude(source_path: str) -> list[dict] | None:
     """Parse a Claude Code raw JSONL session file into structured messages.
 
     Returns a list of messages preserving full tool_use blocks, or None
     if the file can't be read. Each message has:
-      - role: "user" or "assistant"
-      - timestamp: ISO timestamp string
+      - role: "user" or "agent"
+      - created_at: ISO timestamp string
       - content: structured content (list of blocks or string)
 
     Content blocks can be:
@@ -1168,7 +1168,7 @@ def _parse_raw_session(source_path: str) -> list[dict] | None:
                 if role == "user" or msg_type == "user":
                     role = "user"
                 else:
-                    role = "assistant"
+                    role = "agent"
 
                 # Process content blocks
                 if isinstance(content, list):
@@ -1224,7 +1224,7 @@ def _parse_raw_session(source_path: str) -> list[dict] | None:
 
                 messages.append({
                     "role": role,
-                    "timestamp": timestamp,
+                    "created_at": timestamp,
                     "content": content,
                 })
 
@@ -1232,6 +1232,285 @@ def _parse_raw_session(source_path: str) -> list[dict] | None:
 
     except Exception as e:
         print(f"  WARNING: Could not parse {source_path}: {e}")
+        return None
+
+
+def _parse_raw_codex(source_path: str) -> list[dict] | None:
+    """Parse a Codex CLI raw JSONL session file."""
+    path = Path(source_path)
+    if not path.exists():
+        return None
+    try:
+        messages = []
+        pending_thinking = None
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                evt_type = obj.get("type", "")
+
+                # agent_reasoning → thinking block (attach to next assistant)
+                if evt_type == "event_msg":
+                    payload = obj.get("payload", {})
+                    if payload.get("type") == "agent_reasoning":
+                        pending_thinking = payload.get("text", "")
+                    continue
+
+                if evt_type != "response_item":
+                    continue
+
+                payload = obj.get("payload", {})
+                role = payload.get("role", "")
+                if role == "assistant":
+                    role = "agent"
+                elif role != "user":
+                    continue
+                timestamp = obj.get("timestamp", "")
+                raw_content = payload.get("content", [])
+
+                blocks = []
+                if pending_thinking and role == "agent":
+                    blocks.append({"type": "thinking", "thinking": pending_thinking})
+                    pending_thinking = None
+
+                if isinstance(raw_content, list):
+                    for block in raw_content:
+                        if not isinstance(block, dict):
+                            continue
+                        bt = block.get("type", "")
+                        if bt == "input_text":
+                            blocks.append({"type": "text", "text": block.get("text", "")})
+                        elif bt == "text":
+                            blocks.append({"type": "text", "text": block.get("text", "")})
+                        elif bt == "tool_use":
+                            blocks.append({
+                                "type": "tool_use",
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "input": block.get("input", {}),
+                            })
+                        elif bt == "tool_result":
+                            blocks.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.get("tool_use_id", ""),
+                                "content": block.get("content", ""),
+                                "is_error": block.get("is_error", False),
+                            })
+                        else:
+                            blocks.append(block)
+                elif isinstance(raw_content, str):
+                    blocks.append({"type": "text", "text": raw_content})
+
+                content = blocks if blocks else raw_content
+                messages.append({"role": role, "created_at": timestamp, "content": content})
+
+        return messages if messages else None
+    except Exception as e:
+        print(f"  WARNING: Could not parse {source_path} (codex): {e}")
+        return None
+
+
+def _parse_raw_pi_agent(source_path: str) -> list[dict] | None:
+    """Parse a Pi-Agent raw JSONL session file."""
+    path = Path(source_path)
+    if not path.exists():
+        return None
+    try:
+        messages = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if obj.get("type") != "message":
+                    continue
+
+                msg = obj.get("message", {})
+                role = msg.get("role", "")
+                timestamp = obj.get("timestamp", "")
+                raw_content = msg.get("content", [])
+
+                # toolResult role → tool_result block
+                if role == "toolResult":
+                    result = msg.get("result", raw_content)
+                    content_text = result if isinstance(result, str) else str(result)
+                    messages.append({
+                        "role": "user",
+                        "created_at": timestamp,
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": msg.get("toolCallId", msg.get("tool_use_id", "")),
+                            "content": content_text,
+                            "is_error": msg.get("isError", msg.get("is_error", False)),
+                        }],
+                    })
+                    continue
+
+                if role == "assistant":
+                    role = "agent"
+                elif role != "user":
+                    continue
+
+                blocks = []
+                if isinstance(raw_content, list):
+                    for block in raw_content:
+                        if not isinstance(block, dict):
+                            continue
+                        bt = block.get("type", "")
+                        if bt == "text":
+                            blocks.append({"type": "text", "text": block.get("text", "")})
+                        elif bt == "thinking":
+                            blocks.append({"type": "thinking", "thinking": block.get("thinking", block.get("text", ""))})
+                        elif bt == "toolCall":
+                            blocks.append({
+                                "type": "tool_use",
+                                "id": block.get("id", block.get("toolCallId", "")),
+                                "name": block.get("name", ""),
+                                "input": block.get("arguments", block.get("input", {})),
+                            })
+                        elif bt == "tool_use":
+                            blocks.append({
+                                "type": "tool_use",
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "input": block.get("input", {}),
+                            })
+                        else:
+                            blocks.append(block)
+                elif isinstance(raw_content, str):
+                    blocks.append({"type": "text", "text": raw_content})
+
+                content = blocks if blocks else (raw_content if isinstance(raw_content, str) else "")
+                messages.append({"role": role, "created_at": timestamp, "content": content})
+
+        return messages if messages else None
+    except Exception as e:
+        print(f"  WARNING: Could not parse {source_path} (pi_agent): {e}")
+        return None
+
+
+def _parse_raw_gemini(source_path: str) -> list[dict] | None:
+    """Parse a Gemini CLI session JSON file.
+
+    Gemini CLI stores chats as JSON with a ``messages`` array. Each item has
+    a ``type`` field: ``"user"`` for prompts, ``"gemini"`` for model responses,
+    and ``"info"``/``"error"``/``"warning"`` for system messages.
+
+    Model responses (``type: "gemini"``) may additionally carry:
+      - ``toolCalls``: list of tool invocations with args/results
+      - ``thoughts``: list of thinking summaries
+      - ``model``: model ID string (e.g. ``gemini-3-pro-preview``)
+      - ``tokens``: token usage summary
+    """
+    path = Path(source_path)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(errors="replace"))
+        raw_msgs = data.get("messages", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+
+        messages = []
+        for item in raw_msgs:
+            msg_type = item.get("type", item.get("role", ""))
+
+            # Map type → normalized role
+            if msg_type in ("gemini", "model", "assistant"):
+                role = "agent"
+            elif msg_type == "user":
+                role = "user"
+            else:
+                # Skip info/error/warning system messages
+                continue
+
+            timestamp = item.get("timestamp", "")
+            if not isinstance(timestamp, str):
+                timestamp = ""
+
+            # Extract text content
+            raw_content = item.get("content", item.get("text", ""))
+            if isinstance(raw_content, list):
+                text = "\n".join(str(p) for p in raw_content)
+            elif isinstance(raw_content, str):
+                text = raw_content
+            else:
+                text = str(raw_content) if raw_content else ""
+
+            thoughts = item.get("thoughts", [])
+            tool_calls = item.get("toolCalls", [])
+
+            # Simple message (text only, no tools/thoughts): keep as string
+            if not thoughts and not tool_calls:
+                content = text
+            else:
+                # Build structured content blocks
+                blocks = []
+                for thought in thoughts:
+                    desc = thought.get("description", "") if isinstance(thought, dict) else str(thought)
+                    if desc:
+                        blocks.append({"type": "thinking", "thinking": desc})
+                if text:
+                    blocks.append({"type": "text", "text": text})
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": tc.get("name", ""),
+                        "input": tc.get("args", {}),
+                    })
+                    result = tc.get("result")
+                    if result is not None:
+                        result_text = result if isinstance(result, str) else json.dumps(result, default=str)
+                        blocks.append({
+                            "type": "tool_result",
+                            "tool_use_id": tc.get("id", ""),
+                            "content": result_text,
+                            "is_error": tc.get("status", "") == "error",
+                        })
+                content = blocks if blocks else text
+            messages.append({"role": role, "created_at": timestamp, "content": content})
+
+        return messages if messages else None
+    except Exception as e:
+        print(f"  WARNING: Could not parse {source_path} (gemini): {e}")
+        return None
+
+
+# Parser registry — maps agent slug to raw session parser
+_RAW_PARSERS = {
+    "claude": _parse_raw_claude,
+    "claude_code": _parse_raw_claude,
+    "codex": _parse_raw_codex,
+    "pi_agent": _parse_raw_pi_agent,
+    "gemini": _parse_raw_gemini,
+    "gemini_cli": _parse_raw_gemini,
+}
+
+
+def _parse_raw_session(source_path: str, agent_slug: str = "claude") -> list[dict] | None:
+    """Dispatch to the appropriate raw session parser for the given agent.
+
+    Returns structured messages or None if no parser exists / parsing fails.
+    """
+    parser = _RAW_PARSERS.get(agent_slug)
+    if parser is None:
+        return None
+    try:
+        return parser(source_path)
+    except Exception as e:
+        print(f"  WARNING: Could not parse {source_path} ({agent_slug}): {e}")
         return None
 
 
