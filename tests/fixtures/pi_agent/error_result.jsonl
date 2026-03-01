@@ -1,0 +1,5 @@
+{"type":"session","id":"err-session-001","timestamp":"2024-01-15T14:00:00.000Z","cwd":"/Users/test/project","provider":"anthropic","modelId":"claude-sonnet-4-20250514"}
+{"type":"message","timestamp":"2024-01-15T14:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Run the test suite"}],"timestamp":1705327201000}}
+{"type":"message","timestamp":"2024-01-15T14:00:05.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_test_run","name":"run_command","arguments":{"command":"pytest tests/ -v"}}],"stopReason":"toolUse","timestamp":1705327205000}}
+{"type":"message","timestamp":"2024-01-15T14:00:10.000Z","message":{"role":"toolResult","toolCallId":"call_test_run","toolName":"run_command","content":[{"type":"text","text":"FAILED tests/test_auth.py::test_login - AssertionError\nFAILED tests/test_auth.py::test_signup - TimeoutError\n2 failed, 15 passed"}],"isError":true,"timestamp":1705327210000}}
+{"type":"message","timestamp":"2024-01-15T14:00:15.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Two tests failed. Let me investigate the auth module."}],"stopReason":"stop","timestamp":1705327215000}}

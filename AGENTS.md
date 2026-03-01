@@ -38,10 +38,18 @@ After `gather`, users should sanitize the export before sharing by using the
 - CASS SQLite database must exist (user runs `cass index --full` first)
 
 ## Testing
-No test framework yet. Validate changes with:
 ```bash
+# Syntax check
 python3 -c "import ast; ast.parse(open('skillbench.py').read())"
+
+# Run test suite (install dev deps first)
+pip install -e ".[dev]"
+pytest tests/ -v
 ```
+
+Tests live in `tests/` with fixtures in `tests/fixtures/`. Each agent parser
+has a dedicated test class in `test_parsers.py` plus parametrized schema
+validation across all parsers.
 
 ## Conventions
 - All generated files go to `dist/`. Never write output to the repo root.
