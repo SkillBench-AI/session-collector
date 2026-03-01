@@ -189,17 +189,18 @@ def resolve_gemini_hashes(by_path: dict[str, dict]) -> dict[str, dict]:
 
 
 def expand_with_gemini_hashes(paths: list[str]) -> list[str]:
-    """Expand a list of real workspace paths to include Gemini hash equivalents.
+    """Expand a list of real workspace paths to include Gemini equivalents.
 
-    When querying CASS, Gemini sessions are stored under
-    ~/.gemini/tmp/{sha256(path)}/ — not the real project path. This function
-    computes the hash for each path and appends the Gemini hash path so that
-    CASS queries return both direct and Gemini workspace entries.
+    Gemini CLI stores sessions under ~/.gemini/tmp/ using either:
+    - {sha256(path)}/  (older versions)
+    - {basename}/      (0.31+)
+    This appends both variants so CASS queries match either.
     """
     expanded = list(paths)
     for p in paths:
         expanded.append(str(GEMINI_TMP_DIR / gemini_hash_for_path(p)))
-    return expanded
+        expanded.append(str(GEMINI_TMP_DIR / Path(p).name))
+    return list(dict.fromkeys(expanded))  # dedupe
 
 
 def is_skippable(path: str) -> bool:
@@ -877,7 +878,7 @@ def cmd_gather(args):
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
-    # Include Gemini hash paths so we also capture Gemini CLI sessions
+    # Include Gemini hash/basename paths so we also capture Gemini CLI sessions
     query_paths = expand_with_gemini_hashes(allowed_paths)
     placeholders = ",".join("?" * len(query_paths))
     workspace_rows = conn.execute(
@@ -913,13 +914,13 @@ def cmd_gather(args):
             remote = git_remote_url(resolved) if Path(resolved).is_dir() else None
             ws_remotes[resolved] = remote
 
-    # Normalize CASS message roles to a clean set: user, agent, tool
+    # Normalize CASS message roles to a clean set: user, agent
     # CASS uses inconsistent roles (e.g. "gemini" instead of "agent",
     # "developer" for system prompts, "info"/"error" for metadata).
     ROLE_MAP = {
         "user": "user",
         "agent": "agent",
-        "tool": "tool",
+        "tool": "agent",        # tool responses are agent-side content
         "gemini": "agent",      # Gemini responses stored with role=gemini
         "developer": "user",    # system/developer prompts → user
     }
