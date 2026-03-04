@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SkillBench — Usage Overview</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #161922;
+    --surface2: #1e2130;
+    --border: #2a2d3e;
+    --text: #e2e4eb;
+    --text-dim: #8b8fa3;
+    --text-muted: #5c5f73;
+    --accent: #6c5ce7;
+    --accent-glow: rgba(108, 92, 231, 0.15);
+    --green: #00b894;
+    --green-dim: rgba(0, 184, 148, 0.15);
+    --amber: #fdcb6e;
+    --amber-dim: rgba(253, 203, 110, 0.15);
+    --red: #e17055;
+    --red-dim: rgba(225, 112, 85, 0.15);
+    --blue: #74b9ff;
+    --blue-dim: rgba(116, 185, 255, 0.15);
+    --pink: #fd79a8;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 0;
+    min-height: 100vh;
+  }
+
+  .header {
+    background: linear-gradient(135deg, #161922 0%, #1a1d2e 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 32px 40px;
+  }
+
+  .header-inner {
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 4px;
+  }
+
+  .header .subtitle {
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 32px 40px;
+  }
+
+  /* Stat cards */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+
+  .stat-card .label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+
+  .stat-card .value {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -1px;
+  }
+
+  .stat-card .detail {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  /* Section */
+  .section { margin-bottom: 40px; }
+
+  .section-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-title .icon { font-size: 20px; }
+
+  /* Chart containers */
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 32px;
+  }
+
+  @media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
+
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+
+  .chart-card h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+  }
+
+  .chart-card canvas { max-height: 280px; }
+  .chart-card.full { grid-column: 1 / -1; }
+
+  /* Insight cards */
+  .insight-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 16px;
+    border-left: 3px solid var(--accent);
+  }
+
+  .insight-card h3 {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: var(--accent);
+  }
+
+  .insight-card p {
+    font-size: 14px;
+    color: var(--text-dim);
+    line-height: 1.7;
+    margin-bottom: 8px;
+  }
+
+  .insight-card p:last-child { margin-bottom: 0; }
+
+  .insight-card.green { border-left-color: var(--green); }
+  .insight-card.green h3 { color: var(--green); }
+  .insight-card.amber { border-left-color: var(--amber); }
+  .insight-card.amber h3 { color: var(--amber); }
+  .insight-card.blue { border-left-color: var(--blue); }
+  .insight-card.blue h3 { color: var(--blue); }
+  .insight-card.pink { border-left-color: var(--pink); }
+  .insight-card.pink h3 { color: var(--pink); }
+
+  /* Heatmap */
+  .heatmap-grid {
+    display: grid;
+    grid-template-columns: 40px repeat(24, 1fr);
+    gap: 2px;
+    font-size: 10px;
+  }
+
+  .heatmap-grid .row-label {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 6px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .heatmap-grid .col-label {
+    text-align: center;
+    color: var(--text-muted);
+    font-weight: 500;
+    padding-bottom: 4px;
+  }
+
+  .heatmap-cell {
+    aspect-ratio: 1;
+    border-radius: 3px;
+    background: var(--surface2);
+    min-height: 16px;
+  }
+
+  /* Workspace table */
+  .ws-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .ws-table th, .ws-table td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+
+  .ws-table th {
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .ws-table td.name {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    color: var(--blue);
+  }
+
+  .ws-table td.count {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ws-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--accent);
+    opacity: 0.7;
+    margin-top: 4px;
+  }
+
+  .agent-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+
+  .agent-tag {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+
+  .agent-tag.claude_code { background: var(--accent-glow); color: var(--accent); }
+  .agent-tag.codex { background: var(--green-dim); color: var(--green); }
+  .agent-tag.gemini { background: var(--blue-dim); color: var(--blue); }
+  .agent-tag.pi_agent { background: var(--amber-dim); color: var(--amber); }
+  .agent-tag.aider { background: var(--red-dim); color: var(--red); }
+  .agent-tag.cursor { background: rgba(253, 121, 168, 0.15); color: var(--pink); }
+
+  .footer {
+    text-align: center;
+    padding: 32px;
+    color: var(--text-muted);
+    font-size: 12px;
+    border-top: 1px solid var(--border);
+    margin-top: 40px;
+  }
+
+  .footer a { color: var(--accent); text-decoration: none; }
+  .footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-inner">
+    <h1>AI Coding Usage Overview</h1>
+    <div class="subtitle" id="subtitle"></div>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- Key stats -->
+  <div class="stats-grid" id="stats-grid"></div>
+
+  <!-- Narrative insights (auto-generated from data) -->
+  <div class="section" id="insights-section">
+    <div class="section-title"><span class="icon">&#x1F4AC;</span> What the Data Shows</div>
+    <div id="insights-container"></div>
+  </div>
+
+  <!-- Per-Agent Comparison (only if multiple agents) -->
+  <div class="section" id="agent-metrics-section" style="display:none;">
+    <div class="section-title"><span class="icon">&#x1F4CA;</span> Per-Agent Comparison</div>
+    <div class="chart-card full" style="overflow-x: auto;">
+      <table class="ws-table" id="agent-metrics-table">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Sessions</th>
+            <th>Avg Duration</th>
+            <th>Avg Prompt Len</th>
+            <th>Avg Turns</th>
+            <th>Multi-Step %</th>
+          </tr>
+        </thead>
+        <tbody id="agent-metrics-body"></tbody>
+      </table>
+    </div>
+    <div class="chart-row" style="margin-top: 1rem;">
+      <div class="chart-card">
+        <h3>Agent Distribution</h3>
+        <canvas id="chart-agents"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trend charts -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#x1F4C8;</span> Weekly Trends</div>
+
+    <div class="chart-row">
+      <div class="chart-card full">
+        <h3>Sessions per Week</h3>
+        <canvas id="chart-sessions"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-row">
+      <div class="chart-card">
+        <h3>Avg Prompt Length (chars)</h3>
+        <canvas id="chart-prompt-len"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Avg Session Duration (min)</h3>
+        <canvas id="chart-duration"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-row">
+      <div class="chart-card">
+        <h3>Avg Turns per Session</h3>
+        <canvas id="chart-turns"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Multi-Step Session Rate</h3>
+        <canvas id="chart-multistep"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Productivity (conditionally rendered via JS) -->
+  <div class="section" id="productivity-section" style="display:none">
+    <div class="section-title"><span class="icon">&#x26A1;</span> Sessions &amp; Commits</div>
+
+    <div class="insight-card green" id="prod-insight" style="display:none">
+      <h3>Session-to-Commit Pattern</h3>
+      <p id="prod-insight-body"></p>
+    </div>
+
+    <div class="chart-row">
+      <div class="chart-card">
+        <h3>Commits per Week</h3>
+        <canvas id="chart-commits"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Lines Changed per Week</h3>
+        <canvas id="chart-lines"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-row">
+      <div class="chart-card full">
+        <h3>Sessions vs Commits (Weekly)</h3>
+        <canvas id="chart-correlation"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-row">
+      <div class="chart-card full">
+        <h3>Per-Repo: Sessions vs Commits</h3>
+        <canvas id="chart-repo-prod"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Heatmap -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#x1F525;</span> Activity Heatmap (UTC)</div>
+    <div class="chart-card full" style="overflow-x: auto;">
+      <h3>Sessions by Day of Week &times; Hour</h3>
+      <div class="heatmap-grid" id="heatmap"></div>
+    </div>
+  </div>
+
+  <!-- Workspaces -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#x1F4C1;</span> Top Workspaces</div>
+    <div class="chart-card">
+      <table class="ws-table">
+        <thead>
+          <tr><th>Workspace</th><th>Sessions</th><th>Agents</th><th></th></tr>
+        </thead>
+        <tbody id="ws-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Distributions -->
+  <div class="section">
+    <div class="section-title"><span class="icon">&#x1F4CA;</span> Distributions</div>
+    <div class="chart-row">
+      <div class="chart-card">
+        <h3>Session Duration</h3>
+        <canvas id="chart-dur-dist"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Prompt Length</h3>
+        <canvas id="chart-prompt-dist"></canvas>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">
+  Generated by <a href="https://github.com/SkillBench-AI/session-collector">SkillBench session-collector</a> &middot; Prototype &middot; Data analyzed locally
+</div>
+
+<script>
+// ===== EMBEDDED DATA (substituted by build script) =====
+const D = __DASHBOARD_DATA__;
+
+// ===== POPULATE HEADER & STATS =====
+(function init() {
+  const R = D.report;
+  const t1 = R.tier1;
+
+  document.title = 'AI Coding Usage Overview';
+
+  document.getElementById('subtitle').textContent =
+    R.date_range.start + ' \u2013 ' + R.date_range.end + ' \u00b7 ' +
+    t1.total_conversations.toLocaleString() + ' sessions \u00b7 ' +
+    t1.agents_used.length + ' agent(s)';
+
+  // Build stat cards dynamically (pure descriptive)
+  const stats = [
+    { label: 'Total Sessions', value: t1.total_conversations.toLocaleString(), detail: R.date_range.span_days + ' days' },
+    { label: 'Sessions / Week', value: t1.sessions_per_week.toLocaleString() },
+    { label: 'Active Days / Week', value: t1.active_days_per_week.toFixed(1) },
+    { label: 'Avg Duration', value: t1.avg_session_duration_min + ' min' },
+    { label: 'Avg Prompt Length', value: (R.tier2.avg_prompt_length || 0).toLocaleString() + ' chars' },
+    { label: 'Avg Turns / Session', value: (R.tier3.avg_turns_per_session || 0).toFixed(1) },
+    { label: 'Agents Used', value: t1.agents_used.length, detail: t1.agents_used.join(', ').replace(/_/g, ' ') },
+  ];
+
+  const grid = document.getElementById('stats-grid');
+  stats.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'stat-card';
+    card.innerHTML = '<div class="label">' + s.label + '</div>'
+      + '<div class="value">' + s.value + '</div>'
+      + (s.detail ? '<div class="detail">' + s.detail + '</div>' : '');
+    grid.appendChild(card);
+  });
+
+  // Commit stats (if available)
+  if (D.commit_summary) {
+    const cs = D.commit_summary;
+    [
+      { label: 'Commits / Week', value: cs.commits_per_week, detail: cs.total_commits + ' total across ' + cs.repos_with_commits + ' repos' },
+      { label: 'Lines / Commit', value: cs.lines_per_commit.toLocaleString() },
+      { label: 'Sessions / Commit', value: cs.sessions_per_commit },
+    ].forEach(s => {
+      const card = document.createElement('div');
+      card.className = 'stat-card';
+      card.innerHTML = '<div class="label">' + s.label + '</div>'
+        + '<div class="value">' + s.value + '</div>'
+        + (s.detail ? '<div class="detail">' + s.detail + '</div>' : '');
+      grid.appendChild(card);
+    });
+  }
+})();
+
+// ===== NARRATIVE INSIGHTS =====
+(function renderInsights() {
+  const container = document.getElementById('insights-container');
+  if (!D.insights || D.insights.length === 0) {
+    document.getElementById('insights-section').style.display = 'none';
+    return;
+  }
+  D.insights.forEach(insight => {
+    const card = document.createElement('div');
+    card.className = 'insight-card ' + (insight.color || '');
+    card.innerHTML = '<h3>' + insight.title + '</h3><p>' + insight.body + '</p>';
+    container.appendChild(card);
+  });
+})();
+
+// ===== CHART DEFAULTS =====
+Chart.defaults.color = '#8b8fa3';
+Chart.defaults.borderColor = '#2a2d3e';
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+Chart.defaults.font.size = 11;
+Chart.defaults.plugins.legend.display = false;
+
+const weekLabels = D.time_series.map(w => w.week.replace(/^\d{4}-/, ''));
+const ACCENT = '#6c5ce7';
+const GREEN = '#00b894';
+const AMBER = '#fdcb6e';
+const RED = '#e17055';
+const BLUE = '#74b9ff';
+const PINK = '#fd79a8';
+
+function lineOpts(yLabel, suggestedMax) {
+  return {
+    responsive: true,
+    maintainAspectRatio: true,
+    scales: {
+      x: { grid: { display: false } },
+      y: {
+        beginAtZero: true,
+        suggestedMax: suggestedMax,
+        title: { display: true, text: yLabel, font: { size: 10 } },
+      }
+    },
+    elements: {
+      point: { radius: 4, hoverRadius: 6 },
+      line: { tension: 0.3 }
+    }
+  };
+}
+
+// Sessions per week (stacked by agent if multi-agent)
+if (D.agent_breakdown && D.agent_breakdown.length > 1) {
+  const agentColors = { claude_code: ACCENT, codex: GREEN, gemini: BLUE, pi_agent: AMBER, aider: RED, cursor: PINK };
+  const agents = D.agent_breakdown.map(a => a.name);
+  new Chart(document.getElementById('chart-sessions'), {
+    type: 'bar',
+    data: {
+      labels: weekLabels,
+      datasets: agents.map(agent => ({
+        label: agent.replace('_', ' '),
+        data: D.time_series.map(w => (w.agents && w.agents[agent]) || 0),
+        backgroundColor: (agentColors[agent] || '#555') + '88',
+        borderColor: agentColors[agent] || '#555',
+        borderWidth: 1,
+        borderRadius: 2,
+      }))
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: true, position: 'bottom', labels: { font: { size: 11 }, padding: 12 } } },
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true, title: { display: true, text: 'sessions' } }
+      }
+    }
+  });
+} else {
+  new Chart(document.getElementById('chart-sessions'), {
+    type: 'bar',
+    data: {
+      labels: weekLabels,
+      datasets: [{
+        data: D.time_series.map(w => w.sessions),
+        backgroundColor: ACCENT + '77',
+        borderColor: ACCENT,
+        borderWidth: 1,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        x: { grid: { display: false } },
+        y: { beginAtZero: true, title: { display: true, text: 'sessions' } }
+      }
+    }
+  });
+}
+
+// Prompt length
+new Chart(document.getElementById('chart-prompt-len'), {
+  type: 'line',
+  data: {
+    labels: weekLabels,
+    datasets: [{
+      data: D.time_series.map(w => w.avg_prompt_length),
+      borderColor: BLUE,
+      backgroundColor: BLUE + '22',
+      fill: true,
+    }]
+  },
+  options: lineOpts('chars')
+});
+
+// Duration
+new Chart(document.getElementById('chart-duration'), {
+  type: 'line',
+  data: {
+    labels: weekLabels,
+    datasets: [{
+      data: D.time_series.map(w => w.avg_duration_min),
+      borderColor: GREEN,
+      backgroundColor: GREEN + '22',
+      fill: true,
+    }]
+  },
+  options: lineOpts('min')
+});
+
+// Avg turns
+new Chart(document.getElementById('chart-turns'), {
+  type: 'line',
+  data: {
+    labels: weekLabels,
+    datasets: [{
+      data: D.time_series.map(w => w.avg_turns),
+      borderColor: ACCENT,
+      backgroundColor: ACCENT + '22',
+      fill: true,
+    }]
+  },
+  options: lineOpts('turns')
+});
+
+// Multi-step
+new Chart(document.getElementById('chart-multistep'), {
+  type: 'line',
+  data: {
+    labels: weekLabels,
+    datasets: [{
+      data: D.time_series.map(w => +(w.multi_step_rate * 100).toFixed(1)),
+      borderColor: PINK,
+      backgroundColor: PINK + '22',
+      fill: true,
+    }]
+  },
+  options: lineOpts('%', 100)
+});
+
+// ===== PER-AGENT METRICS =====
+const agentColors = { claude_code: ACCENT, codex: GREEN, gemini: BLUE, pi_agent: AMBER, aider: RED, cursor: PINK };
+
+if (D.agent_metrics && D.agent_metrics.length > 1) {
+  document.getElementById('agent-metrics-section').style.display = '';
+  const tbody = document.getElementById('agent-metrics-body');
+  const pctFmt = v => (v * 100).toFixed(1) + '%';
+
+  D.agent_metrics.forEach(a => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td><span class="agent-tag ' + a.name + '">' + a.name.replace(/_/g, ' ') + '</span></td>'
+      + '<td>' + a.sessions + '</td>'
+      + '<td>' + a.avg_duration_min + ' min</td>'
+      + '<td>' + a.avg_prompt_length.toLocaleString() + '</td>'
+      + '<td>' + a.avg_turns + '</td>'
+      + '<td>' + pctFmt(a.multi_step_rate) + '</td>';
+    tbody.appendChild(tr);
+  });
+
+  // Agent donut
+  new Chart(document.getElementById('chart-agents'), {
+    type: 'doughnut',
+    data: {
+      labels: D.agent_breakdown.map(a => a.name.replace(/_/g, ' ')),
+      datasets: [{
+        data: D.agent_breakdown.map(a => a.sessions),
+        backgroundColor: D.agent_breakdown.map(a => agentColors[a.name] || '#555'),
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { font: { size: 11 }, padding: 12 } }
+      },
+      cutout: '55%',
+    }
+  });
+} else if (D.agent_breakdown && D.agent_breakdown.length === 1) {
+  // Single agent — no comparison needed, but show donut anyway
+  document.getElementById('agent-metrics-section').style.display = '';
+  document.getElementById('agent-metrics-table').style.display = 'none';
+  new Chart(document.getElementById('chart-agents'), {
+    type: 'doughnut',
+    data: {
+      labels: [D.agent_breakdown[0].name.replace(/_/g, ' ')],
+      datasets: [{ data: [D.agent_breakdown[0].sessions], backgroundColor: [agentColors[D.agent_breakdown[0].name] || ACCENT], borderWidth: 0 }]
+    },
+    options: { responsive: true, plugins: { legend: { display: true, position: 'bottom' } }, cutout: '55%' }
+  });
+}
+
+// Duration distribution
+new Chart(document.getElementById('chart-dur-dist'), {
+  type: 'bar',
+  data: {
+    labels: D.duration_distribution.map(b => b.bucket),
+    datasets: [{
+      data: D.duration_distribution.map(b => b.count),
+      backgroundColor: GREEN + '77',
+      borderColor: GREEN,
+      borderWidth: 1,
+      borderRadius: 4,
+    }]
+  },
+  options: {
+    responsive: true,
+    scales: {
+      x: { grid: { display: false } },
+      y: { beginAtZero: true, type: 'logarithmic', title: { display: true, text: 'sessions (log)' } }
+    }
+  }
+});
+
+// Prompt length distribution
+new Chart(document.getElementById('chart-prompt-dist'), {
+  type: 'bar',
+  data: {
+    labels: D.prompt_length_distribution.map(b => b.bucket),
+    datasets: [{
+      data: D.prompt_length_distribution.map(b => b.count),
+      backgroundColor: BLUE + '77',
+      borderColor: BLUE,
+      borderWidth: 1,
+      borderRadius: 4,
+    }]
+  },
+  options: {
+    responsive: true,
+    scales: {
+      x: { grid: { display: false } },
+      y: { beginAtZero: true, type: 'logarithmic', title: { display: true, text: 'messages (log)' } }
+    }
+  }
+});
+
+// ===== PRODUCTIVITY SECTION =====
+if (D.commit_time_series && D.commit_summary) {
+  document.getElementById('productivity-section').style.display = '';
+
+  const cs = D.commit_summary;
+  const prodInsight = document.getElementById('prod-insight');
+  prodInsight.style.display = '';
+  document.getElementById('prod-insight-body').innerHTML =
+    'You averaged <strong>' + cs.sessions_per_commit + ' AI sessions per commit</strong> across ' +
+    cs.repos_with_commits + ' active repos. ' +
+    'Total output: <strong>' + cs.total_commits + ' commits</strong>, +' +
+    cs.total_additions.toLocaleString() + '/\u2212' + cs.total_deletions.toLocaleString() + ' lines.';
+
+  const commitWeeks = D.commit_time_series.map(w => w.week.replace(/^\d{4}-/, ''));
+
+  new Chart(document.getElementById('chart-commits'), {
+    type: 'bar',
+    data: {
+      labels: commitWeeks,
+      datasets: [{
+        data: D.commit_time_series.map(w => w.commits),
+        backgroundColor: GREEN + '77',
+        borderColor: GREEN,
+        borderWidth: 1,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        x: { grid: { display: false } },
+        y: { beginAtZero: true, title: { display: true, text: 'commits' } }
+      }
+    }
+  });
+
+  new Chart(document.getElementById('chart-lines'), {
+    type: 'bar',
+    data: {
+      labels: commitWeeks,
+      datasets: [{
+        label: 'Additions',
+        data: D.commit_time_series.map(w => w.additions),
+        backgroundColor: GREEN + '66',
+        borderColor: GREEN,
+        borderWidth: 1,
+        borderRadius: 4,
+      }, {
+        label: 'Deletions',
+        data: D.commit_time_series.map(w => w.deletions),
+        backgroundColor: RED + '66',
+        borderColor: RED,
+        borderWidth: 1,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: true, position: 'bottom', labels: { font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true, title: { display: true, text: 'lines' } }
+      }
+    }
+  });
+
+  const sessionByWeek = {};
+  D.time_series.forEach(w => { sessionByWeek[w.week] = w.sessions; });
+  const alignedSessions = D.commit_time_series.map(w => sessionByWeek[w.week] || 0);
+
+  new Chart(document.getElementById('chart-correlation'), {
+    type: 'bar',
+    data: {
+      labels: commitWeeks,
+      datasets: [{
+        type: 'bar',
+        label: 'Sessions',
+        data: alignedSessions,
+        backgroundColor: ACCENT + '44',
+        borderColor: ACCENT,
+        borderWidth: 1,
+        borderRadius: 4,
+        yAxisID: 'y',
+      }, {
+        type: 'line',
+        label: 'Commits',
+        data: D.commit_time_series.map(w => w.commits),
+        borderColor: GREEN,
+        backgroundColor: GREEN + '22',
+        pointBackgroundColor: GREEN,
+        pointRadius: 5,
+        tension: 0.3,
+        yAxisID: 'y1',
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: true, position: 'bottom', labels: { font: { size: 11 } } } },
+      scales: {
+        x: { grid: { display: false } },
+        y: { type: 'linear', position: 'left', beginAtZero: true, title: { display: true, text: 'sessions' } },
+        y1: { type: 'linear', position: 'right', beginAtZero: true, title: { display: true, text: 'commits' }, grid: { drawOnChartArea: false } },
+      }
+    }
+  });
+
+  const repos = D.repo_productivity.filter(r => r.commits > 0 || r.sessions > 20);
+  const repoLabels = repos.map(r => r.repo.length > 28 ? '...' + r.repo.slice(-25) : r.repo);
+
+  new Chart(document.getElementById('chart-repo-prod'), {
+    type: 'bar',
+    data: {
+      labels: repoLabels,
+      datasets: [{
+        label: 'Sessions',
+        data: repos.map(r => r.sessions),
+        backgroundColor: ACCENT + '66',
+        borderColor: ACCENT,
+        borderWidth: 1,
+      }, {
+        label: 'Commits',
+        data: repos.map(r => r.commits),
+        backgroundColor: GREEN + '88',
+        borderColor: GREEN,
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true,
+      indexAxis: 'y',
+      plugins: { legend: { display: true, position: 'bottom', labels: { font: { size: 11 } } } },
+      scales: {
+        x: { beginAtZero: true, title: { display: true, text: 'count' } },
+        y: { grid: { display: false }, ticks: { font: { size: 10, family: "'SF Mono', monospace" } } },
+      }
+    }
+  });
+}
+
+// ===== HEATMAP =====
+(function renderHeatmap() {
+  const grid = document.getElementById('heatmap');
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const maxCount = Math.max(...D.heatmap.map(h => h.count));
+
+  const spacer = document.createElement('div');
+  grid.appendChild(spacer);
+  for (let h = 0; h < 24; h++) {
+    const lbl = document.createElement('div');
+    lbl.className = 'col-label';
+    lbl.textContent = h.toString().padStart(2, '0');
+    grid.appendChild(lbl);
+  }
+
+  const lookup = {};
+  D.heatmap.forEach(h => { lookup[h.dow + '-' + h.hour] = h.count; });
+
+  for (let d = 0; d < 7; d++) {
+    const lbl = document.createElement('div');
+    lbl.className = 'row-label';
+    lbl.textContent = days[d];
+    grid.appendChild(lbl);
+
+    for (let h = 0; h < 24; h++) {
+      const cell = document.createElement('div');
+      cell.className = 'heatmap-cell';
+      const count = lookup[d + '-' + h] || 0;
+      if (count > 0) {
+        const intensity = Math.pow(count / maxCount, 0.4);
+        const r = Math.round(108 + (0 - 108) * intensity);
+        const g = Math.round(92 + (184 - 92) * intensity);
+        const b = Math.round(231 + (148 - 231) * intensity);
+        cell.style.background = 'rgba(' + r + ', ' + g + ', ' + b + ', ' + (0.3 + intensity * 0.7) + ')';
+      }
+      cell.title = days[d] + ' ' + h + ':00 UTC \u2014 ' + count + ' sessions';
+      grid.appendChild(cell);
+    }
+  }
+})();
+
+// ===== WORKSPACE TABLE =====
+(function renderWorkspaces() {
+  const tbody = document.getElementById('ws-tbody');
+  if (!D.top_workspaces || D.top_workspaces.length === 0) return;
+  const maxSessions = D.top_workspaces[0].sessions;
+
+  D.top_workspaces.forEach(ws => {
+    const tr = document.createElement('tr');
+
+    const tdName = document.createElement('td');
+    tdName.className = 'name';
+    tdName.textContent = ws.name;
+    tr.appendChild(tdName);
+
+    const tdCount = document.createElement('td');
+    tdCount.className = 'count';
+    tdCount.textContent = ws.sessions.toLocaleString();
+    const bar = document.createElement('div');
+    bar.className = 'ws-bar';
+    bar.style.width = (ws.sessions / maxSessions * 100) + '%';
+    tdCount.appendChild(bar);
+    tr.appendChild(tdCount);
+
+    const tdAgents = document.createElement('td');
+    const tags = document.createElement('div');
+    tags.className = 'agent-tags';
+    Object.entries(ws.agents).forEach(([agent, count]) => {
+      const tag = document.createElement('span');
+      tag.className = 'agent-tag ' + agent;
+      tag.textContent = agent.replace(/_/g, ' ') + ' ' + count;
+      tags.appendChild(tag);
+    });
+    tdAgents.appendChild(tags);
+    tr.appendChild(tdAgents);
+
+    tr.appendChild(document.createElement('td'));
+    tbody.appendChild(tr);
+  });
+})();
+</script>
+
+</body>
+</html>

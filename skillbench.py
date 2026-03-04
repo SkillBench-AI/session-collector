@@ -1083,6 +1083,441 @@ def cmd_push(args):
 
 
 # ---------------------------------------------------------------------------
+# Direct metrics computation (no CASS dependency)
+# ---------------------------------------------------------------------------
+
+def _compute_metrics(conversations) -> dict | None:
+    """Compute Tier 1-3 agentic engineering metrics from Conversation objects.
+
+    Works directly with session_parser.Conversation objects — no CASS/SQL needed.
+    Returns a dict matching the JSON report structure, or None if no data.
+    """
+    total_convos = len(conversations)
+    if total_convos == 0:
+        return None
+
+    # Date range
+    timestamps = []
+    for c in conversations:
+        if c.started_at:
+            timestamps.append(c.started_at)
+        if c.ended_at:
+            timestamps.append(c.ended_at)
+
+    if timestamps:
+        first_ts = min(timestamps)
+        last_ts = max(timestamps)
+        first_date = datetime.fromtimestamp(first_ts / 1000, tz=timezone.utc)
+        last_date = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
+        span_days = max((last_date - first_date).days, 1)
+        span_weeks = max(span_days / 7, 1)
+    else:
+        span_weeks = span_days = 1
+        first_date = last_date = None
+
+    sessions_per_week = total_convos / span_weeks
+    agents_used = set(c.agent for c in conversations)
+
+    # Active days
+    active_days = set()
+    for c in conversations:
+        if c.started_at:
+            day = datetime.fromtimestamp(c.started_at / 1000, tz=timezone.utc).date()
+            active_days.add(day)
+    active_days_per_week = len(active_days) / span_weeks
+
+    # Session durations
+    durations = []
+    for c in conversations:
+        if c.started_at and c.ended_at and c.ended_at > c.started_at:
+            dur_min = (c.ended_at - c.started_at) / 60000
+            if dur_min < 480:  # cap at 8 hours
+                durations.append(dur_min)
+    avg_session_duration = sum(durations) / len(durations) if durations else 0
+
+    # User messages
+    user_messages = []
+    msgs_per_conv = defaultdict(int)
+    for c in conversations:
+        for m in c.messages:
+            if m.role == "user":
+                user_messages.append(m)
+                msgs_per_conv[c.session_id] += 1
+
+    total_user_msgs = len(user_messages)
+    avg_prompt_length = (
+        sum(len(m.content) for m in user_messages) / total_user_msgs
+        if total_user_msgs else 0
+    )
+
+    # Context provision rate
+    context_indicators = re.compile(
+        r'(/[\w./-]+\.\w+|```|line \d+|src/|lib/|test/|\.py|\.ts|\.js|\.go|\.rs|\.dart)',
+        re.IGNORECASE
+    )
+    context_count = sum(1 for m in user_messages if context_indicators.search(m.content or ""))
+    context_provision_rate = context_count / total_user_msgs if total_user_msgs else 0
+
+    # Multi-step rate: sessions with >3 user turns
+    multi_step = sum(1 for count in msgs_per_conv.values() if count > 3)
+    multi_step_rate = multi_step / total_convos if total_convos else 0
+
+    # First attempt success: sessions with <=2 user messages
+    first_attempt = sum(1 for count in msgs_per_conv.values() if count <= 2)
+    first_attempt_success_rate = first_attempt / total_convos if total_convos else 0
+
+    # Correction rate
+    correction_re = re.compile(
+        r'\b(no[,.]|wrong|incorrect|instead|actually|not what|try again|that\'s not|fix |redo)\b',
+        re.IGNORECASE
+    )
+    correction_count = sum(1 for m in user_messages if correction_re.search(m.content or ""))
+    correction_rate = correction_count / total_user_msgs if total_user_msgs else 0
+
+    # Average turns
+    avg_turns = sum(msgs_per_conv.values()) / len(msgs_per_conv) if msgs_per_conv else 0
+
+    # Ladder score
+    score = compute_ladder_score(
+        sessions_per_week=sessions_per_week,
+        avg_prompt_length=avg_prompt_length,
+        context_provision_rate=context_provision_rate,
+        first_attempt_success_rate=first_attempt_success_rate,
+        correction_rate=correction_rate,
+        multi_step_rate=multi_step_rate,
+        avg_turns=avg_turns,
+        agent_diversity=len(agents_used),
+    )
+    level, level_name = ladder_level(score)
+
+    return {
+        "level": level,
+        "level_name": level_name,
+        "score": score,
+        "date_range": {
+            "start": str(first_date.date()) if first_date else None,
+            "end": str(last_date.date()) if last_date else None,
+            "span_days": span_days,
+        },
+        "tier1": {
+            "total_conversations": total_convos,
+            "total_user_messages": total_user_msgs,
+            "sessions_per_week": round(sessions_per_week, 1),
+            "active_days_per_week": round(active_days_per_week, 1),
+            "avg_session_duration_min": round(avg_session_duration, 1),
+            "agents_used": sorted(agents_used),
+        },
+        "tier2": {
+            "avg_prompt_length": round(avg_prompt_length),
+            "context_provision_rate": round(context_provision_rate, 3),
+            "multi_step_rate": round(multi_step_rate, 3),
+        },
+        "tier3": {
+            "first_attempt_success_rate": round(first_attempt_success_rate, 3),
+            "correction_rate": round(correction_rate, 3),
+            "avg_turns_per_session": round(avg_turns, 1),
+        },
+        "_raw": {
+            "sessions_per_week": sessions_per_week,
+            "avg_prompt_length": avg_prompt_length,
+            "context_provision_rate": context_provision_rate,
+            "first_attempt_success_rate": first_attempt_success_rate,
+            "correction_rate": correction_rate,
+            "multi_step_rate": multi_step_rate,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unified collect command (replaces scan → analyze → gather → sanitize)
+# ---------------------------------------------------------------------------
+
+def cmd_collect(args):
+    """One-command pipeline: scan → classify → analyze → export → sanitize.
+
+    Replaces the manual 4-step workflow with a single interactive command.
+    No CASS dependency — reads sessions directly from local agent log files.
+    """
+    from session_parser import SessionScanner
+    from sanitizer import Sanitizer
+
+    print("=" * 60)
+    print("  SkillBench Collect")
+    print("=" * 60)
+
+    # --- Step 1: Scan ---
+    print("\n[1/5] Scanning for coding agent sessions...")
+    scanner = SessionScanner()
+    scanner.scan_all(verbose=True)
+    resolved = scanner.resolve_gemini_hashes()
+    if resolved:
+        print(f"  Resolved {resolved} Gemini hash dir(s) to real project paths")
+
+    if not scanner.conversations:
+        print("\nNo sessions found.")
+        print("Supported agents: Claude Code, Gemini CLI, Codex CLI")
+        sys.exit(1)
+
+    # --- Step 2: Classify ---
+    summaries = scanner.get_workspace_summary()
+    print(f"\n[2/5] Classifying {len(summaries)} workspaces...")
+
+    included = []
+    excluded = []
+    skipped_count = 0
+
+    for i, ws in enumerate(summaries):
+        path = ws["workspace"]
+        if is_skippable(path):
+            skipped_count += 1
+            continue
+        if not Path(path).is_dir():
+            skipped_count += 1
+            continue
+
+        if (i + 1) % 10 == 0:
+            print(f"  [{i+1}/{len(summaries)}] classifying...", end="\r")
+
+        remote = git_remote_url(path)
+        gh = classify_github_repo(remote) if remote else None
+
+        if gh:
+            public = gh["is_public"]
+            license_key = gh["license_key"]
+            license_name = gh["license_name"]
+            oss = license_key is not None and license_key != "other"
+            license_id = license_name or license_key
+        else:
+            public = None
+            license_id = detect_license_local(path)
+            oss = False
+
+        entry = {
+            "path": path,
+            "remote": remote,
+            "license": license_id,
+            "public": public,
+            "oss": oss,
+            "agents": ws["agents"],
+            "conversations": ws["total_conversations"],
+            "user_messages": ws["total_user_messages"],
+        }
+
+        if public and oss:
+            entry["reason"] = f"{license_id}, public"
+            included.append(entry)
+        else:
+            reasons = []
+            if gh:
+                if not public:
+                    reasons.append("private")
+                if license_key is None:
+                    reasons.append("no LICENSE")
+                elif license_key == "other":
+                    reasons.append("unrecognized license")
+            else:
+                if not remote:
+                    reasons.append("no git remote")
+                else:
+                    reasons.append("not GitHub")
+            entry["reason"] = ", ".join(reasons) if reasons else "unknown"
+            excluded.append(entry)
+
+    # Show classification
+    print(f"\n  Auto-included (public + OSS license): {len(included)}")
+    for e in included:
+        agents = ", ".join(e["agents"])
+        print(f"    {e['path']}")
+        print(f"      {e['conversations']} sessions, {e['reason']}, {agents}")
+
+    print(f"  Excluded (private/no-license): {len(excluded)}")
+    if len(excluded) <= 10:
+        for e in excluded:
+            print(f"    {e['path']}  ({e['reason']})")
+    else:
+        for e in excluded[:5]:
+            print(f"    {e['path']}  ({e['reason']})")
+        print(f"    ... and {len(excluded) - 5} more")
+
+    print(f"  Skipped (temp/transient): {skipped_count}")
+
+    allowed_paths = [e["path"] for e in included]
+
+    if not allowed_paths:
+        print("\nNo public/OSS workspaces found to include.")
+        print("To include private workspaces, use `skillbench scan` to generate")
+        print("bootblock.txt, then uncomment the workspaces you want to share.")
+        sys.exit(1)
+
+    # Interactive confirmation
+    if not getattr(args, "yes", False):
+        print()
+        try:
+            response = input("Continue with these workspaces? [Y/n] ")
+            if response.strip().lower() in ("n", "no"):
+                print("Aborted. Use `skillbench scan` to manually edit the workspace list.")
+                sys.exit(0)
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            sys.exit(0)
+
+    # Write bootblock.txt for compatibility with scan/analyze/gather
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
+    with open(BOOTBLOCK_FILE, "w") as f:
+        f.write("# SkillBench Boot Block — auto-generated by `skillbench collect`\n")
+        f.write("# Edit this file to add/remove workspaces\n#\n")
+        for e in included:
+            agents = ",".join(e["agents"])
+            f.write(f"{e['path']}  # {e['reason']}, {agents}, {e['conversations']} sessions\n")
+        f.write("\n# EXCLUDED (uncomment to include):\n")
+        for e in excluded:
+            f.write(f"# {e['path']}  # {e['reason']}\n")
+
+    # --- Step 3: Analyze ---
+    print(f"\n[3/5] Computing agentic engineering metrics...")
+    conversations = scanner.get_conversations_for_workspaces(allowed_paths)
+
+    if not conversations:
+        print("No conversations found for the included workspaces.")
+        sys.exit(1)
+
+    metrics = _compute_metrics(conversations)
+    if not metrics:
+        print("Could not compute metrics (no data).")
+        sys.exit(1)
+
+    # Print compact report
+    t1 = metrics["tier1"]
+    t2 = metrics["tier2"]
+    t3 = metrics["tier3"]
+    raw = metrics["_raw"]
+    dr = metrics["date_range"]
+
+    print()
+    print("  " + "─" * 56)
+    bar = "█" * (metrics["score"] // 5) + "░" * (20 - metrics["score"] // 5)
+    print(f"  {metrics['level']} {metrics['level_name']}  {bar}  {metrics['score']}/100")
+    print("  " + "─" * 56)
+
+    if dr["start"] and dr["end"]:
+        print(f"  {dr['start']} → {dr['end']} ({dr['span_days']} days)")
+    print(f"  {t1['total_conversations']} sessions, {t1['total_user_messages']} user messages")
+    print(f"  {t1['sessions_per_week']} sessions/week, {t1['active_days_per_week']} active days/week")
+    print(f"  Agents: {', '.join(t1['agents_used'])}")
+    print()
+    print(f"  Prompts: avg {t2['avg_prompt_length']} chars, "
+          f"context {t2['context_provision_rate']:.0%}, "
+          f"multi-step {t2['multi_step_rate']:.0%}")
+    print(f"  Efficiency: first-attempt {t3['first_attempt_success_rate']:.0%}, "
+          f"correction {t3['correction_rate']:.0%}, "
+          f"avg {t3['avg_turns_per_session']} turns")
+    print()
+
+    # Strengths and edges
+    strengths, edges = identify_strengths_and_edges(
+        raw["sessions_per_week"], raw["avg_prompt_length"],
+        raw["context_provision_rate"], raw["first_attempt_success_rate"],
+        raw["correction_rate"], raw["multi_step_rate"],
+    )
+    if strengths:
+        print("  Strengths: " + " · ".join(strengths))
+    if edges:
+        print("  Growth edges: " + " · ".join(edges))
+    print()
+
+    # Write JSON report (without _raw key)
+    report = {k: v for k, v in metrics.items() if k != "_raw"}
+    report_path = DIST_DIR / "skillbench_report.json"
+    report_path.write_text(json.dumps(report, indent=2))
+
+    # --- Step 4: Export ---
+    print(f"[4/5] Exporting {len(conversations)} sessions...")
+
+    remote_cache = {}
+    export_data = []
+    for conv in conversations:
+        ws = conv.workspace
+        if ws not in remote_cache:
+            remote_cache[ws] = git_remote_url(ws) if Path(ws).is_dir() else None
+        d = conv.to_dict()
+        d["git_remote"] = remote_cache[ws]
+        export_data.append(d)
+
+    # --- Step 5: Sanitize ---
+    print(f"\n[5/5] Sanitizing...")
+    sanitizer = Sanitizer()
+    sanitized = sanitizer.sanitize_export(export_data)
+    sanitizer.print_stats()
+
+    # Write sanitized export
+    output_path = Path(args.output) if args.output else DIST_DIR / "skillbench_export_sanitized.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(sanitized, f, indent=2, default=str)
+
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    total_msgs = sum(len(s.get("messages", [])) for s in sanitized)
+
+    # --- Bonus: Generate dashboard ---
+    dashboard_path = None
+    try:
+        from dashboard import compute_dashboard_data, generate_html
+        print(f"\nGenerating dashboard...")
+        dashboard_data = compute_dashboard_data(sanitized, report)
+        html = generate_html(dashboard_data)
+        dashboard_path = DIST_DIR / "dashboard.html"
+        dashboard_path.write_text(html)
+        # Also write dashboard_data.json
+        data_json_path = DIST_DIR / "dashboard_data.json"
+        with open(data_json_path, "w") as f:
+            json.dump(dashboard_data, f, indent=2, default=str)
+        print(f"  Dashboard: {dashboard_path}")
+    except Exception as e:
+        print(f"  Dashboard generation skipped: {e}")
+
+    print(f"\n{'=' * 60}")
+    print(f"  Collection complete!")
+    print(f"  {len(sanitized)} sessions, {total_msgs} messages")
+    print(f"  Export:    {output_path} ({size_mb:.1f} MB)")
+    print(f"  Report:    {report_path}")
+    if dashboard_path:
+        print(f"  Dashboard: {dashboard_path}")
+    print(f"  Bootblock: {BOOTBLOCK_FILE}")
+    print(f"{'=' * 60}")
+    print()
+    if dashboard_path:
+        print(f"Open {dashboard_path} in a browser to view your results.")
+    print("Next: skillbench push")
+
+
+def cmd_dashboard(args):
+    """Generate a standalone HTML dashboard from export + report data."""
+    from dashboard import build_dashboard
+
+    export_path = Path(args.export)
+    report_path = None
+    if args.report:
+        report_path = Path(args.report)
+    else:
+        auto_report = export_path.parent / "skillbench_report.json"
+        if auto_report.exists():
+            report_path = auto_report
+    output_path = Path(args.output) if args.output else DIST_DIR / "dashboard.html"
+    commit_path = Path(args.commits) if args.commits else None
+
+    if not export_path.exists():
+        print(f"ERROR: Export file not found: {export_path}", file=sys.stderr)
+        sys.exit(1)
+
+    result = build_dashboard(
+        export_path, report_path, output_path,
+        commit_data_path=commit_path,
+        verbose=True,
+    )
+    print(f"\nOpen {result} in a browser to view your dashboard.")
+
+
+# ---------------------------------------------------------------------------
 # Raw JSONL session parsing (bypasses CASS flattening)
 # ---------------------------------------------------------------------------
 
@@ -1893,6 +2328,21 @@ def main():
                                "complete tool_use payloads (code diffs, edit contents, command outputs). "
                                "Without this flag, uses CASS flat content (tool blocks stubbed).")
 
+    # collect (unified pipeline)
+    collect_p = sub.add_parser("collect",
+        help="One-command pipeline: scan → classify → analyze → export → sanitize")
+    collect_p.add_argument("-o", "--output", help="Output file for sanitized export")
+    collect_p.add_argument("-y", "--yes", action="store_true",
+                           help="Skip interactive confirmation")
+
+    # dashboard
+    dash_p = sub.add_parser("dashboard", help="Generate standalone HTML dashboard from export data")
+    dash_p.add_argument("-e", "--export", default=str(DIST_DIR / "skillbench_export_sanitized.json"),
+                        help="Path to sanitized export JSON")
+    dash_p.add_argument("-r", "--report", help="Path to skillbench_report.json (auto-detected)")
+    dash_p.add_argument("-c", "--commits", help="Path to commit_data.json (optional)")
+    dash_p.add_argument("-o", "--output", help=f"Output HTML file (default: {DIST_DIR / 'dashboard.html'})")
+
     # push
     sub.add_parser("push", help="Upload sanitized session data to SkillBench API")
 
@@ -1920,12 +2370,16 @@ def main():
         cmd_analyze(args)
     elif args.command == "gather":
         cmd_gather(args)
+    elif args.command == "collect":
+        cmd_collect(args)
     elif args.command == "push":
         cmd_push(args)
     elif args.command == "collect-commits":
         cmd_collect_commits(args)
     elif args.command == "collect-prs":
         cmd_collect_prs(args)
+    elif args.command == "dashboard":
+        cmd_dashboard(args)
     else:
         parser.print_help()
 
