@@ -338,6 +338,9 @@
     <!-- The story -->
     <div id="ce-narrative-container"></div>
 
+    <!-- Session highlights -->
+    <div id="ce-highlights-container" style="display:none"></div>
+
     <!-- 2. What You Can Do — recommendations with copy-paste -->
     <div id="ce-recs-container" style="display:none">
       <h3 style="font-size:17px; font-weight:700; margin: 28px 0 14px; color: var(--text);">
@@ -616,34 +619,74 @@ if (D.ce && D.ce.available) {
   const heroGrid = document.getElementById('ce-hero-stats');
   const heroStats = [];
 
-  if (D.ce.learning_rate !== null) {
+  // Card 1: Efficiency trend — concrete, not jargon
+  const fls = D.ce.first_last_shift;
+  if (fls !== null && fls !== undefined) {
+    const absShift = Math.abs(fls).toFixed(1);
+    const dir = fls > 0.2 ? 'up' : fls < -0.2 ? 'down' : 'steady';
+    const nWeeks = D.ce.weekly_ce.length;
+    let trendValue, trendDetail, trendColor;
+    if (dir === 'up') {
+      trendValue = absShift + '\u03c3 better';
+      trendDetail = 'vs your first month (' + nWeeks + ' weeks of data)';
+      trendColor = 'var(--green)';
+    } else if (dir === 'down') {
+      trendValue = absShift + '\u03c3 lower';
+      trendDetail = 'vs your first month \u2014 see recommendations';
+      trendColor = 'var(--amber)';
+    } else {
+      trendValue = 'Holding steady';
+      trendDetail = nWeeks + ' weeks of data';
+      trendColor = 'var(--text-dim)';
+    }
+    heroStats.push({ label: 'Efficiency Trend', value: trendValue, detail: trendDetail, color: trendColor });
+  } else if (D.ce.learning_rate !== null) {
     const lr = D.ce.learning_rate;
-    const arrow = lr > 0.05 ? '\u2191' : lr < -0.05 ? '\u2193' : '\u2192';
-    const verdict = lr > 0.05 ? 'You\'re improving' : lr < -0.05 ? 'Needs attention' : 'Holding steady';
     heroStats.push({
-      label: 'Learning Trajectory',
-      value: (lr >= 0 ? '+' : '') + lr.toFixed(2) + '/wk ' + arrow,
-      detail: verdict,
+      label: 'Efficiency Trend',
+      value: lr > 0.05 ? 'Improving \u2191' : lr < -0.05 ? 'Declining \u2193' : 'Steady \u2192',
+      detail: D.ce.weekly_ce.length + ' weeks of data',
       color: lr > 0.05 ? 'var(--green)' : lr < -0.05 ? 'var(--amber)' : 'var(--text-dim)',
     });
   }
 
-  // Agent gap — if multiple agents, show the best one
+  // Card 2: Agent profile — workhorse + sharpest, not just "best"
   const agentCE = D.ce.agent_ce || {};
   const agentNames = Object.keys(agentCE);
   if (agentNames.length > 1) {
-    const sorted = agentNames.sort((a, b) => agentCE[b].mean_ce - agentCE[a].mean_ce);
-    const best = sorted[0];
-    const worst = sorted[sorted.length - 1];
-    const gap = (agentCE[best].mean_ce - agentCE[worst].mean_ce).toFixed(1);
+    const byUsage = agentNames.sort((a, b) => agentCE[b].n_sessions - agentCE[a].n_sessions);
+    const workhorse = byUsage[0];
+    const whPct = Math.round(agentCE[workhorse].n_sessions / D.ce.total_scored_sessions * 100);
+    const byCE = agentNames.sort((a, b) => agentCE[b].mean_ce - agentCE[a].mean_ce);
+    const sharpest = byCE[0];
+
+    if (workhorse === sharpest) {
+      heroStats.push({
+        label: 'Your Workhorse',
+        value: workhorse.replace(/_/g, ' '),
+        detail: whPct + '% of sessions \u2014 also your most efficient',
+        color: 'var(--blue)',
+      });
+    } else {
+      heroStats.push({
+        label: 'Your Agents',
+        value: workhorse.replace(/_/g, ' ') + ' (' + whPct + '%)',
+        detail: sharpest.replace(/_/g, ' ') + ' is ' +
+          (agentCE[sharpest].mean_ce - agentCE[workhorse].mean_ce).toFixed(1) +
+          '\u03c3 more efficient (' + agentCE[sharpest].n_sessions + ' sessions)',
+        color: 'var(--blue)',
+      });
+    }
+  } else if (agentNames.length === 1) {
     heroStats.push({
-      label: 'Best Agent',
-      value: best.replace(/_/g, ' '),
-      detail: gap + '\u03c3 ahead of ' + worst.replace(/_/g, ' '),
+      label: 'Your Agent',
+      value: agentNames[0].replace(/_/g, ' '),
+      detail: D.ce.total_scored_sessions + ' scored sessions',
       color: 'var(--blue)',
     });
   }
 
+  // Card 3: Correction rate — already interpretable
   if (diag.correction_rate !== undefined) {
     const cr = diag.correction_rate;
     heroStats.push({
@@ -662,6 +705,41 @@ if (D.ce && D.ce.available) {
       + (s.detail ? '<div class="detail">' + s.detail + '</div>' : '');
     heroGrid.appendChild(card);
   });
+
+  // --- Session highlights (best vs worst) ---
+  const hl = D.ce.highlights || {};
+  if (hl.best && hl.worst) {
+    const hlContainer = document.getElementById('ce-highlights-container');
+    hlContainer.style.display = '';
+    const hlCard = document.createElement('div');
+    hlCard.className = 'insight-card';
+    hlCard.style.borderLeftColor = 'var(--accent)';
+    hlCard.style.marginBottom = '24px';
+
+    const bestAgent = (hl.best.agent || '').replace(/_/g, ' ');
+    const worstAgent = (hl.worst.agent || '').replace(/_/g, ' ');
+
+    hlCard.innerHTML = '<h3>\u26A1 Your Best vs Worst Sessions</h3>'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:12px">'
+      + '<div style="padding:16px;background:var(--green-dim);border-radius:8px">'
+      + '<div style="font-size:12px;text-transform:uppercase;color:var(--green);font-weight:600;margin-bottom:8px">Peak Session (' + bestAgent + ')</div>'
+      + '<div style="font-size:13px;color:var(--text-dim);line-height:1.7">'
+      + '<strong>' + hl.best.extraction + 'x</strong> output leverage<br>'
+      + '<strong>' + (hl.best.convergence * 100).toFixed(0) + '%</strong> clean resolution<br>'
+      + '<strong>' + (hl.best.friction * 100).toFixed(0) + '%</strong> friction<br>'
+      + '<strong>' + (hl.best.task_switching * 100).toFixed(0) + '%</strong> context switching'
+      + '</div></div>'
+      + '<div style="padding:16px;background:var(--red-dim);border-radius:8px">'
+      + '<div style="font-size:12px;text-transform:uppercase;color:var(--red);font-weight:600;margin-bottom:8px">Roughest Session (' + worstAgent + ')</div>'
+      + '<div style="font-size:13px;color:var(--text-dim);line-height:1.7">'
+      + '<strong>' + hl.worst.extraction + 'x</strong> output leverage<br>'
+      + '<strong>' + (hl.worst.convergence * 100).toFixed(0) + '%</strong> clean resolution<br>'
+      + '<strong>' + (hl.worst.friction * 100).toFixed(0) + '%</strong> friction<br>'
+      + '<strong>' + (hl.worst.task_switching * 100).toFixed(0) + '%</strong> context switching'
+      + '</div></div>'
+      + '</div>';
+    hlContainer.appendChild(hlCard);
+  }
 
   // --- Narrative: "What This Means" ---
   const narr = document.getElementById('ce-narrative-container');
@@ -704,6 +782,10 @@ if (D.ce && D.ce.available) {
     if (si !== null && si > 0) {
       body += ' Your Schema Index (+' + si.toFixed(3) + '/wk) confirms this \u2014 even ' +
         'controlling for harder tasks, you\u2019re improving.';
+    }
+    const streak = D.ce.improvement_streak || 0;
+    if (streak >= 3) {
+      body += ' You\u2019ve had <strong>' + streak + ' consecutive weeks</strong> of improvement \u2014 real momentum.';
     }
     body += ' The recommendations below can help you push further.';
     narrBody = body;
