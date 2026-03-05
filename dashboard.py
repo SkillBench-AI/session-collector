@@ -109,6 +109,38 @@ _PHASE_PATTERNS = {
 # Inactivity gap for episode chunking (milliseconds)
 _EPISODE_GAP_MS = 20 * 60 * 1000  # 20 minutes
 
+# Productive tool names (edits/writes that produce output)
+_PRODUCTIVE_TOOLS = {"Edit", "Write", "NotebookEdit", "edit", "write",
+                     "notebookedit", "str_replace_editor"}
+
+# Verify-type tool patterns (test/build/lint commands)
+_VERIFY_PATTERN = re.compile(
+    r'\b(test|pytest|jest|vitest|mocha|npm test|go test|flutter test|cargo test|'
+    r'lint|eslint|pylint|flake8|ruff|build|compile|tsc|mypy|check|make)\b',
+    re.IGNORECASE)
+
+# Closure / summary patterns in final agent message
+_CLOSURE_PATTERN = re.compile(
+    r'\b(done|completed|finished|shipped|merged|pushed|committed|'
+    r'all (tests|checks) pass|changes? (committed|pushed)|'
+    r'here\'s what (changed|I did)|summary of changes|'
+    r'everything (looks good|passes|works)|ready for review)\b',
+    re.IGNORECASE)
+
+# User dissatisfaction markers (beyond correction keywords)
+_DISSATISFACTION_KEYWORDS = [
+    "this doesn't work", "that's broken", "wrong approach",
+    "start over", "not what I asked", "completely wrong",
+    "this is broken", "undo everything", "scrap this",
+    "that's not right", "you broke", "worse than before",
+]
+
+# Truncation / continuation patterns in agent messages
+_TRUNCATION_PATTERN = re.compile(
+    r'(\.{3}\s*$|continue\.\.\.|shall I continue|I\'ll continue|'
+    r'let me continue|to be continued|I can continue)',
+    re.IGNORECASE)
+
 
 def _linear_regression_slope(x_values, y_values):
     """Simple OLS slope. No numpy needed."""
@@ -322,11 +354,50 @@ def _compute_session_ce(session: dict) -> dict | None:
     else:
         phase_spread = 0.0
 
-    # Episode chunking metrics
+    # --- NEW SIGNALS (v2) ---
+
+    # Q: Quality proxy — verification behavior + closure + satisfaction
+    verify_calls = 0
+    productive_actions = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+            if btype == "tool_use":
+                name = block.get("name", "")
+                inp_str = str(block.get("input", {}).get("command", ""))
+                if _VERIFY_PATTERN.search(name) or _VERIFY_PATTERN.search(inp_str):
+                    verify_calls += 1
+                if name.lower() in {t.lower() for t in _PRODUCTIVE_TOOLS}:
+                    productive_actions += 1
+
+    verification_intensity = verify_calls / max(tool_calls, 1)
+
+    # Closure quality: does the final agent message wrap up cleanly?
+    last_agent = agent_msgs[-1] if agent_msgs else ""
+    closure_quality = 1.0 if _CLOSURE_PATTERN.search(last_agent[-500:]) else 0.0
+
+    # User dissatisfaction markers
+    dissatisfaction_count = sum(
+        1 for msg in user_msgs
+        if any(pat in msg.lower() for pat in _DISSATISFACTION_KEYWORDS)
+    )
+    dissatisfaction_rate = dissatisfaction_count / max(len(user_msgs), 1)
+
+    # Combined quality (higher = better)
+    quality = (verification_intensity * 0.4
+               + (1.0 - tool_friction) * 0.3
+               + closure_quality * 0.2
+               + (1.0 - dissatisfaction_rate) * 0.1)
+
+    # T: Throughput proxy — productive actions per active minute
+    # Episode chunking (moved up for throughput calc)
     episodes = _chunk_into_episodes(messages)
     n_episodes = len(episodes)
-
-    # Active duration (sum of episode durations, excluding gaps)
     active_ms = 0
     for ep in episodes:
         first_ts = _msg_timestamp_ms(ep[0])
@@ -335,7 +406,71 @@ def _compute_session_ce(session: dict) -> dict | None:
             active_ms += (last_ts - first_ts)
     active_duration_min = active_ms / 60000
 
+    throughput_raw = productive_actions / max(active_duration_min, 0.5)
+    # Rework penalty: corrections suggest wasted productive actions
+    rework_penalty = min(correction_count * 0.1, 0.5)
+    throughput = throughput_raw * (1.0 - rework_penalty)
+
+    # SP: Information Sprawl — novel anchors introduced by agent
+    user_anchors_all = set()
+    agent_anchors_all = set()
+    for role, text in all_text_by_turn:
+        anchors = _extract_file_anchors(text)
+        if role == "user":
+            user_anchors_all |= anchors
+        else:
+            agent_anchors_all |= anchors
+    novel_agent_anchors = agent_anchors_all - user_anchors_all
+    sprawl = (len(novel_agent_anchors) / max(len(agent_anchors_all), 1)
+              if agent_anchors_all else 0.0)
+
+    # TR: Truncation — incomplete agent responses forcing follow-up
+    truncation_count = 0
+    for msg in agent_msgs:
+        fence_count = msg.count("```")
+        if fence_count % 2 != 0:
+            truncation_count += 1
+        elif _TRUNCATION_PATTERN.search(msg[-300:] if len(msg) > 300 else msg):
+            truncation_count += 1
+    truncation_rate = truncation_count / max(len(agent_msgs), 1)
+
+    # DD: Dependency Debt — returning to anchors after long gap
+    anchor_timeline = []
+    for i, (role, text) in enumerate(all_text_by_turn):
+        if role == "user":
+            anchors = _extract_file_anchors(text)
+            if anchors:
+                anchor_timeline.append((i, anchors))
+
+    debt_events = 0
+    total_revisits = 0
+    for idx in range(1, len(anchor_timeline)):
+        turn_i, anchors_i = anchor_timeline[idx]
+        for prev_idx in range(idx - 1, -1, -1):
+            prev_turn, prev_anchors = anchor_timeline[prev_idx]
+            if anchors_i & prev_anchors:
+                gap = turn_i - prev_turn
+                if gap > 10:
+                    debt_events += 1
+                total_revisits += 1
+                break
+    dependency_debt = debt_events / max(total_revisits, 1)
+
+    # EI: Element Interactivity — structural proximity of anchor pairs
+    all_anchors_flat = list(user_anchors_all | agent_anchors_all)
+    proximate_pairs = 0
+    total_pairs = 0
+    for i in range(min(len(all_anchors_flat), 20)):  # cap to avoid O(n^2) blow-up
+        for j in range(i + 1, min(len(all_anchors_flat), 20)):
+            total_pairs += 1
+            dir_a = all_anchors_flat[i].split("/")[0]
+            dir_b = all_anchors_flat[j].split("/")[0]
+            if dir_a == dir_b:
+                proximate_pairs += 1
+    element_interactivity = proximate_pairs / max(total_pairs, 1)
+
     return {
+        # Original signals
         "friction": friction,
         "escalation": escalation,
         "extraction": extraction,
@@ -347,6 +482,18 @@ def _compute_session_ce(session: dict) -> dict | None:
         "active_duration_min": active_duration_min,
         "tool_calls": tool_calls,
         "tool_errors": tool_errors,
+        # v2 signals
+        "quality": quality,
+        "throughput": throughput,
+        "sprawl": sprawl,
+        "truncation_rate": truncation_rate,
+        "dependency_debt": dependency_debt,
+        "element_interactivity": element_interactivity,
+        "verification_intensity": verification_intensity,
+        "closure_quality": closure_quality,
+        "dissatisfaction_rate": dissatisfaction_rate,
+        "productive_actions": productive_actions,
+        "verify_calls": verify_calls,
     }
 
 
@@ -386,7 +533,7 @@ def _compute_ce_metrics(sessions: list[dict]) -> dict:
         return {"available": False, "reason": "insufficient_sessions",
                 "scored": n, "minimum": 10}
 
-    # Z-score each component
+    # Z-score each component — original + v2 signals
     frictions = [c["friction"] for c in raw_components]
     escalations = [max(c["escalation"], 0) for c in raw_components]
     extractions = [c["extraction"] for c in raw_components]
@@ -394,6 +541,13 @@ def _compute_ce_metrics(sessions: list[dict]) -> dict:
     tool_frictions = [c["tool_friction"] for c in raw_components]
     task_switchings = [c["task_switching"] for c in raw_components]
     phase_spreads = [c["phase_spread"] for c in raw_components]
+    # v2 signals
+    qualities = [c["quality"] for c in raw_components]
+    throughputs = [c["throughput"] for c in raw_components]
+    sprawls = [c["sprawl"] for c in raw_components]
+    truncations = [c["truncation_rate"] for c in raw_components]
+    dep_debts = [c["dependency_debt"] for c in raw_components]
+    elem_interactivities = [c["element_interactivity"] for c in raw_components]
 
     z_f = _z_scores(frictions)
     z_e = _z_scores(escalations)
@@ -402,22 +556,52 @@ def _compute_ce_metrics(sessions: list[dict]) -> dict:
     z_tf = _z_scores(tool_frictions)
     z_ts = _z_scores(task_switchings)
     z_ps = _z_scores(phase_spreads)
+    z_q = _z_scores(qualities)
+    z_t = _z_scores(throughputs)
+    z_sp = _z_scores(sprawls)
+    z_tr = _z_scores(truncations)
+    z_dd = _z_scores(dep_debts)
+    z_ei = _z_scores(elem_interactivities)
 
-    # Composite CE per session (formula is internal IP)
-    # Positive: convergence quality, value extraction
-    # Negative: friction, escalation, tool friction, task switching, phase spread
-    # Task switching weighted 1.5x — paper's strongest finding
-    ce_scores = [
-        z_c[i] + z_x[i] - z_f[i] - z_e[i] - z_tf[i] - 1.5 * z_ts[i] - 0.5 * z_ps[i]
-        for i in range(n)
+    # CE = Performance - Cost  (formula is internal IP)
+    # Performance: quality, throughput, convergence, value extraction
+    # Cost: friction, escalation, tool friction, task switching (1.5x),
+    #        phase spread (0.5x), sprawl, truncation (0.5x), dep debt (0.5x)
+    # Element interactivity feeds IL for difficulty adjustment, not CE directly
+    _COMPONENTS = [
+        # (label, z_array, weight, side)
+        ("quality",          z_q,  +1.0,  "performance"),
+        ("throughput",       z_t,  +1.0,  "performance"),
+        ("convergence",      z_c,  +1.0,  "performance"),
+        ("value_extraction", z_x,  +1.0,  "performance"),
+        ("friction",         z_f,  -1.0,  "cost"),
+        ("escalation",       z_e,  -1.0,  "cost"),
+        ("tool_friction",    z_tf, -1.0,  "cost"),
+        ("task_switching",   z_ts, -1.5,  "cost"),
+        ("phase_spread",     z_ps, -0.5,  "cost"),
+        ("sprawl",           z_sp, -1.0,  "cost"),
+        ("truncation",       z_tr, -0.5,  "cost"),
+        ("dependency_debt",  z_dd, -0.5,  "cost"),
     ]
 
-    # Intrinsic load proxy (for difficulty-adjusted learning)
-    # Phase spread + episode count approximate task complexity
-    il_scores = [z_ps[i] for i in range(n)]
+    ce_scores = []
+    # Per-session component contributions (for driver decomposition)
+    session_drivers = []
+    for i in range(n):
+        score = 0.0
+        drivers = {}
+        for label, z_arr, weight, side in _COMPONENTS:
+            contrib = weight * z_arr[i]
+            score += contrib
+            drivers[label] = round(contrib, 3)
+        ce_scores.append(score)
+        session_drivers.append(drivers)
+
+    # Intrinsic load proxy: phase spread + element interactivity
+    il_scores = [z_ps[i] + z_ei[i] for i in range(n)]
 
     # Performance proxy (positive components only)
-    p_scores = [z_c[i] + z_x[i] for i in range(n)]
+    p_scores = [z_q[i] + z_t[i] + z_c[i] + z_x[i] for i in range(n)]
 
     # Weekly aggregation — output only opaque ce_score
     weekly_buckets = defaultdict(list)
@@ -557,6 +741,86 @@ def _compute_ce_metrics(sessions: list[dict]) -> dict:
         else:
             recent_trend = "stable"
 
+    # v2 diagnostics
+    avg_quality = round(sum(qualities) / n, 3)
+    avg_throughput = round(sum(throughputs) / n, 2)
+    avg_sprawl = round(sum(sprawls) / n, 3)
+    avg_truncation = round(sum(truncations) / n, 3)
+    avg_dep_debt = round(sum(dep_debts) / n, 3)
+    avg_elem_interact = round(sum(elem_interactivities) / n, 3)
+    avg_verify_intensity = round(
+        sum(c["verification_intensity"] for c in raw_components) / n, 3)
+    avg_closure = round(
+        sum(c["closure_quality"] for c in raw_components) / n, 3)
+    total_productive = sum(c["productive_actions"] for c in raw_components)
+    total_verify = sum(c["verify_calls"] for c in raw_components)
+
+    # --- Driver decomposition (opaque labels for dashboard) ---
+    # Use correlation with CE to identify which components matter most
+    driver_labels = {
+        "quality": "Work Quality",
+        "throughput": "Productive Output",
+        "convergence": "Resolution Quality",
+        "value_extraction": "Output Leverage",
+        "friction": "Correction Overhead",
+        "escalation": "Prompt Growth",
+        "tool_friction": "Tool Errors",
+        "task_switching": "Context Switching",
+        "phase_spread": "Phase Mixing",
+        "sprawl": "Scope Expansion",
+        "truncation": "Incomplete Responses",
+        "dependency_debt": "Context Rebuilding",
+    }
+    driver_summary = []
+    ce_mean = sum(ce_scores) / n
+    ce_var = sum((c - ce_mean) ** 2 for c in ce_scores)
+    for label, z_arr, weight, side in _COMPONENTS:
+        # Correlation between weighted component and CE
+        contribs = [weight * z_arr[i] for i in range(n)]
+        c_mean = sum(contribs) / n
+        if ce_var > 1e-10:
+            cov = sum((contribs[i] - c_mean) * (ce_scores[i] - ce_mean)
+                       for i in range(n))
+            # Normalized impact: proportion of CE variance explained
+            impact = round(cov / ce_var, 3)
+        else:
+            impact = 0.0
+        driver_summary.append({
+            "name": driver_labels.get(label, label),
+            "impact": impact,
+            "direction": "helping" if weight > 0 else "hurting",
+            "side": side,
+        })
+    # Sort by absolute impact (most influential first)
+    driver_summary.sort(key=lambda d: abs(d["impact"]), reverse=True)
+
+    # Per-week top drivers (for weekly_drivers output)
+    weekly_driver_buckets = defaultdict(lambda: defaultdict(list))
+    for i in range(n):
+        started = session_meta[i][0]
+        dt = datetime.fromtimestamp(started / 1000, tz=timezone.utc)
+        week = f"{dt.isocalendar()[0]}-W{dt.isocalendar()[1]:02d}"
+        for label, contrib in session_drivers[i].items():
+            weekly_driver_buckets[week][label].append(contrib)
+
+    weekly_drivers = []
+    for week in sorted(weekly_driver_buckets.keys()):
+        week_means = {}
+        for label, vals in weekly_driver_buckets[week].items():
+            week_means[label] = round(sum(vals) / len(vals), 3)
+        # Top 3 by absolute mean contribution
+        sorted_d = sorted(week_means.items(),
+                          key=lambda x: abs(x[1]), reverse=True)[:3]
+        weekly_drivers.append({
+            "week": week,
+            "top_drivers": [
+                {"name": driver_labels.get(d[0], d[0]),
+                 "value": d[1],
+                 "direction": "helping" if d[1] > 0 else "hurting"}
+                for d in sorted_d
+            ],
+        })
+
     diagnostics = {
         "correction_rate": avg_correction_rate,
         "prompt_trend": prompt_trend,
@@ -570,6 +834,17 @@ def _compute_ce_metrics(sessions: list[dict]) -> dict:
         "avg_phase_spread": avg_phase_spread,
         "avg_episodes_per_session": avg_episodes_per_session,
         "avg_active_duration_min": avg_active_duration,
+        # v2 diagnostics
+        "avg_quality_score": avg_quality,
+        "avg_throughput": avg_throughput,
+        "avg_sprawl": avg_sprawl,
+        "avg_truncation_rate": avg_truncation,
+        "avg_dependency_debt": avg_dep_debt,
+        "avg_element_interactivity": avg_elem_interact,
+        "avg_verification_intensity": avg_verify_intensity,
+        "avg_closure_rate": avg_closure,
+        "total_productive_actions": total_productive,
+        "total_verify_actions": total_verify,
     }
 
     # --- Actionable recommendations ---
@@ -587,6 +862,8 @@ def _compute_ce_metrics(sessions: list[dict]) -> dict:
         "total_sessions": len(sessions),
         "diagnostics": diagnostics,
         "recommendations": recommendations,
+        "drivers": driver_summary,
+        "weekly_drivers": weekly_drivers,
     }
 
 
@@ -595,14 +872,25 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
                                   schema_index: float | None = None) -> list[dict]:
     """Generate concrete, actionable recommendations from CE diagnostics.
 
-    Each recommendation is {title, body, priority, category}.
+    Each recommendation is {title, body, priority, category, copyable?, copyable_label?}.
     Categories: prompting, tooling, workflow, timing, config.
+    copyable: a formatted text block the user can paste into CLAUDE.md or workflow docs.
+    copyable_label: describes where to paste it.
     """
     recs = []
     cr = diagnostics["correction_rate"]
+    ts = diagnostics.get("avg_task_switching", 0)
+    ter = diagnostics.get("tool_error_rate", 0)
+    total_tc = diagnostics.get("total_tool_calls", 0)
+    total_te = diagnostics.get("total_tool_errors", 0)
+    ps = diagnostics.get("avg_phase_spread", 0)
+    sprawl_rate = diagnostics.get("avg_sprawl", 0)
+    trunc_rate = diagnostics.get("avg_truncation_rate", 0)
+    debt_rate = diagnostics.get("avg_dependency_debt", 0)
+    olr = diagnostics.get("avg_output_ratio", 0)
+    verify_int = diagnostics.get("avg_verification_intensity", 0)
 
     # --- Task switching (paper's strongest finding) ---
-    ts = diagnostics.get("avg_task_switching", 0)
     if ts > 0.25:
         recs.append({
             "title": "Reduce mid-session context switching",
@@ -617,6 +905,19 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
             ),
             "priority": "high",
             "category": "workflow",
+            "copyable": (
+                "## Focus Discipline\n"
+                "- Maintain ONE active objective at a time.\n"
+                "- If you notice a valuable tangent, add it to a \"Parking Lot\" "
+                "list instead of switching.\n"
+                "- Before switching tasks/files/modules, ask: \"Do you want to "
+                "switch focus now, or park this?\"\n"
+                "- Do not start a new subtask until the current one has a clear "
+                "closure signal (tests pass, lint clean, PR opened).\n"
+                "- If switching is necessary, summarize current state first so "
+                "context can be restored later."
+            ),
+            "copyable_label": "Add to your CLAUDE.md",
         })
     elif ts > 0.10:
         recs.append({
@@ -632,9 +933,6 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
         })
 
     # --- Tool error rate ---
-    ter = diagnostics.get("tool_error_rate", 0)
-    total_tc = diagnostics.get("total_tool_calls", 0)
-    total_te = diagnostics.get("total_tool_errors", 0)
     if ter > 0.15 and total_tc > 20:
         recs.append({
             "title": "High tool error rate \u2014 debug churn detected",
@@ -643,11 +941,21 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
                 "This suggests repeated failed attempts \u2014 builds that don't compile, "
                 "tests that keep failing, or file operations that miss their target. "
                 "When you hit 2 consecutive tool errors, stop and diagnose the root "
-                "cause before retrying. Ask the agent to explain what went wrong "
-                "before trying the next fix."
+                "cause before retrying."
             ),
             "priority": "high",
             "category": "workflow",
+            "copyable": (
+                "## Tool-Error Hygiene\n"
+                "- After a tool error: propose ONE likely root cause + ONE fix.\n"
+                "- Do not retry the same command more than twice without "
+                "changing approach.\n"
+                "- If two consecutive failures occur, stop and ask one "
+                "clarifying question before continuing.\n"
+                "- When a build/test fails: read the error output fully before "
+                "attempting a fix."
+            ),
+            "copyable_label": "Add to your CLAUDE.md",
         })
     elif ter > 0.08 and total_tc > 20:
         recs.append({
@@ -661,17 +969,103 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
             "category": "tooling",
         })
 
-    # --- Phase spread (doing too many things at once) ---
-    ps = diagnostics.get("avg_phase_spread", 0)
+    # --- Information sprawl (v2) ---
+    if sprawl_rate > 0.5:
+        recs.append({
+            "title": "Agent is expanding scope beyond your requests",
+            "body": (
+                f"About {sprawl_rate:.0%} of the files/modules the agent touches "
+                "weren't in your original prompt. This scope creep increases cognitive "
+                "load \u2014 you have to evaluate changes you didn't ask for. The research "
+                "shows this is a major source of extraneous load."
+            ),
+            "priority": "high",
+            "category": "workflow",
+            "copyable": (
+                "## Structured Disclosure (anti-sprawl)\n"
+                "- Default response format:\n"
+                "  1) Current objective (1 sentence)\n"
+                "  2) Next 1-3 actions (commands or file edits)\n"
+                "  3) Why this is the right move (\u22643 bullets)\n"
+                "  4) Optional extras ONLY if I ask\n"
+                "- Do NOT introduce new files/subtasks unless I explicitly "
+                "request them.\n"
+                "- Keep changes scoped to files I mentioned. If you see "
+                "related issues elsewhere, note them but don't fix them."
+            ),
+            "copyable_label": "Add to your CLAUDE.md",
+        })
+    elif sprawl_rate > 0.3:
+        recs.append({
+            "title": "Watch for scope creep in agent responses",
+            "body": (
+                f"The agent introduces files/modules beyond your prompt scope "
+                f"about {sprawl_rate:.0%} of the time. Some exploration is good, "
+                "but if it's making sessions harder to follow, ask the agent to "
+                "stay within the files you specified."
+            ),
+            "priority": "medium",
+            "category": "workflow",
+        })
+
+    # --- Truncation (v2) ---
+    if trunc_rate > 0.15:
+        recs.append({
+            "title": "Agent responses are getting cut off",
+            "body": (
+                f"About {trunc_rate:.0%} of agent responses show signs of "
+                "truncation (unclosed code blocks, continuation prompts). "
+                "This forces follow-up messages that break your flow. Try: "
+                "break complex requests into smaller pieces, or explicitly "
+                "tell the agent to focus on the most critical part first."
+            ),
+            "priority": "medium",
+            "category": "prompting",
+            "copyable": (
+                "## Scope Management\n"
+                "- If a task requires touching more than 3 files, break it "
+                "into sequential steps.\n"
+                "- Focus on the most critical change first; we can iterate.\n"
+                "- If your response will be very long, ask before proceeding: "
+                "\"This will be a large change. Want me to break it up?\""
+            ),
+            "copyable_label": "Add to your CLAUDE.md",
+        })
+
+    # --- Dependency debt (v2) ---
+    if debt_rate > 0.3:
+        recs.append({
+            "title": "Context rebuilding is costing you efficiency",
+            "body": (
+                f"About {debt_rate:.0%} of the time you return to files/modules, "
+                "it's after a long gap without re-engaging the surrounding context. "
+                "This forces you (and the agent) to rebuild mental models from "
+                "scratch. The research calls this 'dependency debt' \u2014 it consumes "
+                "working memory that could go toward productive work."
+            ),
+            "priority": "medium",
+            "category": "workflow",
+            "copyable": (
+                "## Context Manifest\n"
+                "At the start of each session or when resuming work:\n"
+                "- State the current goal in 1 sentence\n"
+                "- List which files/modules are in play\n"
+                "- Summarize what changed last time\n"
+                "- Define what \"done\" looks like\n\n"
+                "When returning to old code after a break, use a brief "
+                "\"recap\" step before making changes."
+            ),
+            "copyable_label": "Add to your CLAUDE.md",
+        })
+
+    # --- Phase spread ---
     if ps > 0.7:
         recs.append({
             "title": "Tighten your work loops",
             "body": (
                 "Your sessions mix many work phases (reading, planning, implementing, "
                 "testing, debugging, polishing) in parallel. This increases cognitive "
-                "load. Try enforcing a sequence: inspect \u2192 plan \u2192 implement \u2192 verify. "
-                "Complete each phase before moving to the next. Save polish/refactor "
-                "for a dedicated pass."
+                "load. Try enforcing a sequence: inspect \u2192 plan \u2192 implement \u2192 verify."
             ),
             "priority": "medium",
             "category": "workflow",
@@ -682,24 +1076,31 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
         recs.append({
             "title": "Reduce correction cycles",
             "body": (
-                f"You're redirecting the agent in roughly {cr:.0%} of sessions. "
+                f"You're redirecting the agent in roughly {cr:.0%} of turns. "
                 "That's a lot of back-and-forth that doesn't produce output. "
-                "Consider adding your project conventions, preferred patterns, and "
-                "common pitfalls to your CLAUDE.md (or equivalent system prompt). "
-                "Front-loading this context means the agent gets it right the first time."
+                "Front-load your project conventions into your CLAUDE.md."
             ),
             "priority": "high",
             "category": "prompting",
+            "copyable": (
+                "## Alignment Check\n"
+                "- Before implementing: confirm your understanding of the "
+                "requirement in 1-2 sentences.\n"
+                "- If ambiguous, ask ONE clarifying question before proceeding.\n"
+                "- After completing a task, summarize what changed and why.\n"
+                "- Follow existing patterns in the codebase; don't introduce "
+                "new conventions without asking."
+            ),
+            "copyable_label": "Add to your CLAUDE.md",
         })
     elif cr > 0.15:
         recs.append({
             "title": "Tune your initial context",
             "body": (
-                f"Your correction rate ({cr:.0%}) is moderate \u2014 some redirection is "
-                "normal, but there's room to reduce it. Review which corrections recur: "
-                "if they're about code style, naming, or conventions, encode those in "
-                "your CLAUDE.md. If they're about misunderstood requirements, try "
-                "including acceptance criteria in your initial prompt."
+                f"Your correction rate ({cr:.0%}) is moderate. If corrections "
+                "recur on code style or naming, encode those in your CLAUDE.md. "
+                "If they're about misunderstood requirements, include acceptance "
+                "criteria in your initial prompt."
             ),
             "priority": "medium",
             "category": "prompting",
@@ -710,27 +1111,46 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
         recs.append({
             "title": "Break complex tasks into steps",
             "body": (
-                "Your prompts tend to grow longer within sessions \u2014 each message "
-                "adds more context as the agent struggles with complexity. Try "
-                "decomposing multi-part requests into focused, sequential prompts. "
-                "Let the agent confirm each step before moving on. Smaller scope "
+                "Your prompts tend to grow longer within sessions. Try decomposing "
+                "multi-part requests into focused, sequential prompts. Smaller scope "
                 "per prompt = fewer misunderstandings."
             ),
             "priority": "medium",
             "category": "workflow",
         })
 
+    # --- Verification intensity (v2) ---
+    if verify_int < 0.05 and total_tc > 50:
+        recs.append({
+            "title": "Run more verification steps",
+            "body": (
+                f"Only {verify_int:.0%} of your tool actions are "
+                "test/build/lint runs. Without frequent verification, errors "
+                "compound silently. Adding verification loops catches issues "
+                "before they cascade into rework."
+            ),
+            "priority": "high",
+            "category": "workflow",
+            "copyable": (
+                "## Verification Discipline\n"
+                "- After every implementation change, run the relevant "
+                "test/build/lint command.\n"
+                "- Do not stack multiple edits before verifying \u2014 verify "
+                "after each logical change.\n"
+                "- If tests don't exist for the code you're changing, write "
+                "a quick smoke test first."
+            ),
+            "copyable_label": "Add to your CLAUDE.md",
+        })
+
     # --- Output leverage ---
-    olr = diagnostics["avg_output_ratio"]
     if olr < 3.0:
         recs.append({
             "title": "Delegate more to the agent",
             "body": (
-                f"Your input-to-output ratio is {olr:.1f}:1 "
-                "(agent output per unit of your input). You may be over-specifying. "
-                "Try giving higher-level instructions and letting the agent fill in "
-                "implementation details. Use follow-ups for refinement rather than "
-                "front-loading every detail."
+                f"Your input-to-output ratio is {olr:.1f}:1. You may be "
+                "over-specifying. Try higher-level instructions and let "
+                "the agent fill in implementation details."
             ),
             "priority": "medium",
             "category": "prompting",
@@ -739,17 +1159,15 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
         recs.append({
             "title": "High leverage \u2014 spot-check output quality",
             "body": (
-                f"You're extracting {olr:.0f}\u00d7 more output "
-                "than input, which is efficient \u2014 but high-leverage sessions can "
-                "produce output you haven't fully reviewed. Spot-check agent output "
-                "for correctness, especially on unfamiliar code or when the agent "
-                "is generating large blocks."
+                f"You're extracting {olr:.0f}\u00d7 more output than input. "
+                "Efficient, but high-leverage sessions can produce output you "
+                "haven't fully reviewed. Spot-check for correctness."
             ),
             "priority": "low",
             "category": "workflow",
         })
 
-    # --- Time-of-day ---
+    # --- Time-of-day with copyable schedule ---
     tod = diagnostics.get("time_of_day_ce", {})
     if len(tod) >= 2:
         best_period = max(tod.items(), key=lambda x: x[1]["mean_ce"])
@@ -765,18 +1183,25 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
             recs.append({
                 "title": f"Your peak: {bp_name} sessions (UTC)",
                 "body": (
-                    f"Your interaction efficiency is highest in the {bp_name} "
+                    f"Your efficiency is highest in the {bp_name} "
                     f"(CE: {bp_ce:+.2f}, {bp_n} sessions) and lowest in the "
-                    f"{wp_name} (CE: {wp_ce:+.2f}, {wp_n} sessions). "
-                    "Consider scheduling your most demanding agent-assisted tasks "
-                    f"during {bp_name} hours, and saving routine/simple tasks "
-                    f"for the {wp_name}."
+                    f"{wp_name} (CE: {wp_ce:+.2f}, {wp_n} sessions)."
                 ),
                 "priority": "medium",
                 "category": "timing",
+                "copyable": (
+                    f"## Scheduling Guide (from your data)\n"
+                    f"- Deep work / complex tasks: {bp_name} (UTC) "
+                    f"\u2014 your peak efficiency window\n"
+                    f"- Routine tasks (docs, cleanup, formatting): "
+                    f"{wp_name} is fine\n"
+                    f"- Avoid long uninterrupted marathons \u2014 extraneous "
+                    f"load accumulates over extended sessions"
+                ),
+                "copyable_label": "Scheduling cheat sheet",
             })
 
-    # --- Agent selection ---
+    # --- Agent selection with routing guide ---
     if len(agent_ce) >= 2:
         sorted_agents = sorted(agent_ce.items(),
                                 key=lambda x: x[1]["mean_ce"], reverse=True)
@@ -786,18 +1211,33 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
         if gap > 1.0:
             best_name = best[0].replace("_", " ")
             worst_name = worst[0].replace("_", " ")
+            # Build routing table
+            routing_lines = ["## Agent Routing Guide (from your data)"]
+            for agent_name, agent_data in sorted_agents:
+                display = agent_name.replace("_", " ")
+                ce_val = agent_data["mean_ce"]
+                n_sess = agent_data["n_sessions"]
+                if ce_val > 0.3:
+                    role = "complex debugging, multi-file changes, architecture"
+                elif ce_val > -0.5:
+                    role = "general-purpose tasks"
+                else:
+                    role = "simple, well-defined tasks only"
+                routing_lines.append(
+                    f"- {display} (CE: {ce_val:+.2f}\u03c3, {n_sess} sessions): {role}")
+
             recs.append({
                 "title": f"Prefer {best_name} for complex work",
                 "body": (
                     f"Your efficiency with {best_name} is "
-                    f"substantially higher than with {worst_name} "
-                    f"(CE gap: {gap:.1f}\u03c3). When both agents can handle a task, "
-                    f"default to {best_name}. For tasks that require "
-                    f"{worst_name}, invest more in initial prompting \u2014 "
-                    "detailed context, explicit constraints, and examples."
+                    f"substantially higher than {worst_name} "
+                    f"(CE gap: {gap:.1f}\u03c3). Default to {best_name} when "
+                    f"both agents can handle the task."
                 ),
                 "priority": "high",
                 "category": "tooling",
+                "copyable": "\n".join(routing_lines),
+                "copyable_label": "Agent routing reference",
             })
 
     # --- Recent dip ---
@@ -805,12 +1245,9 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
         recs.append({
             "title": "Address the recent efficiency dip",
             "body": (
-                "Your CE has declined over the last few weeks relative to your "
-                "earlier baseline. Common causes: new codebase/domain, switching "
-                "tools, or increasing task ambiguity. Review whether your CLAUDE.md "
-                "or system prompt still matches your current workflows. If you "
-                "recently changed projects or tools, expect a ramp-up period \u2014 "
-                "update your agent configuration to reflect the new context."
+                "Your CE has declined over the last few weeks. Common causes: "
+                "new codebase/domain, switching tools, or increasing task ambiguity. "
+                "Review whether your CLAUDE.md still matches your workflows."
             ),
             "priority": "medium",
             "category": "workflow",
@@ -822,63 +1259,66 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
         recs.append({
             "title": "Schema formation is stalling",
             "body": (
-                "After adjusting for task difficulty, your performance isn't improving "
-                "over time. In CLT terms: working memory is being spent compensating "
-                "for coordination overhead rather than building stable mental models. "
-                "Signs to watch for: re-reading the same files repeatedly, asking the "
-                "agent to re-explain architecture, not improving 'time to green' "
-                "in repos you visit often. Focus on internalizing the codebase \u2014 "
-                "write schema notes after each subtask to crystallize what you learned."
+                "After adjusting for task difficulty, your performance isn't improving. "
+                "Working memory is being spent compensating for coordination overhead "
+                "rather than building stable mental models. Signs: re-reading the same "
+                "files repeatedly, not improving 'time to green' in familiar repos."
             ),
             "priority": "high",
             "category": "workflow",
+            "copyable": (
+                "## Learning Mode (schema formation)\n"
+                "At the end of each completed subtask, write a 3-bullet "
+                "\"Schema Note\":\n"
+                "  - mental model / key invariant discovered\n"
+                "  - common pitfall to avoid next time\n"
+                "  - reusable pattern or checklist step\n"
+                "Ask if I want to save it to project notes.\n\n"
+                "Periodically ask: \"What are the key architectural "
+                "decisions in this codebase?\""
+            ),
+            "copyable_label": "Add to your CLAUDE.md",
         })
     elif learning_rate is not None and learning_rate > 0.1:
         recs.append({
             "title": "Keep doing what you\u2019re doing",
             "body": (
-                "Your efficiency is improving over time \u2014 your mental models for "
-                "agent interaction are getting sharper. Document your most effective "
-                "prompting patterns so they survive context switches. Consider "
-                "sharing what works with your team."
+                "Your efficiency is improving over time \u2014 your mental models "
+                "are getting sharper. Document your most effective prompting "
+                "patterns so they survive context switches."
             ),
             "priority": "low",
             "category": "workflow",
         })
 
-    # --- CLAUDE.md template (grounded in paper findings) ---
-    config_signals = sum([
-        cr > 0.15,
-        ts > 0.15,
+    # --- Session start template (if multiple issues detected) ---
+    issue_count = sum([
+        cr > 0.15, ts > 0.10, sprawl_rate > 0.3,
+        debt_rate > 0.2, trunc_rate > 0.1,
         diagnostics.get("prompt_trend") == "expanding",
-        ter > 0.10,
     ])
-    if config_signals >= 2:
+    if issue_count >= 3:
         recs.append({
-            "title": "Add CE guardrails to your agent config",
+            "title": "Use a session start template",
             "body": (
-                "Multiple signals suggest your agent interactions could benefit from "
-                "explicit guardrails. Consider adding this to your CLAUDE.md or "
-                "system prompt:\n\n"
-                "## Focus Discipline\n"
-                "- Maintain ONE active objective at a time.\n"
-                "- If you notice a valuable tangent, add it to a Parking Lot "
-                "instead of switching.\n"
-                "- Before switching files/modules, ask: is the current task done?\n\n"
-                "## Structured Disclosure\n"
-                "- Default format: 1) Current objective, 2) Next 1-3 actions, "
-                "3) Why this is the right move.\n"
-                "- Do NOT introduce new subtasks unless asked.\n\n"
-                "## Close Loops\n"
-                "- Define 'done' for each subtask (tests pass, lint clean).\n"
-                "- Do not start a new subtask until the current one has a clear "
-                "closure signal.\n\n"
-                "## Tool-Error Hygiene\n"
-                "- After a tool error: propose ONE root cause + ONE fix.\n"
-                "- After 2 consecutive failures, stop and ask a clarifying question."
+                "Multiple efficiency signals suggest your sessions would benefit "
+                "from a structured start. Paste this at the beginning of each "
+                "coding session to set clear scope and prevent drift."
             ),
             "priority": "medium",
-            "category": "config",
+            "category": "workflow",
+            "copyable": (
+                "## Session Start Checklist\n"
+                "Before starting work, answer these:\n"
+                "1. What is the ONE goal for this session?\n"
+                "2. Which files/modules will I touch?\n"
+                "3. What does \"done\" look like? (specific test/behavior)\n"
+                "4. What should I NOT touch in this session?\n\n"
+                "Paste into your first message:\n"
+                "\"Goal: [X]. Files: [Y]. Done when: [Z]. "
+                "Do not modify anything outside this scope.\""
+            ),
+            "copyable_label": "Paste at session start",
         })
 
     return recs
