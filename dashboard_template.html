@@ -395,6 +395,55 @@
     </div>
   </div>
 
+  <!-- Cognitive Efficiency (conditionally rendered via JS) -->
+  <div class="section" id="ce-section" style="display:none">
+    <div class="section-title"><span class="icon">&#x1F9E0;</span> Cognitive Efficiency</div>
+
+    <div class="stats-grid" id="ce-stats-grid"></div>
+
+    <!-- What This Means — narrative explanation -->
+    <div id="ce-narrative-container"></div>
+
+    <div class="chart-row">
+      <div class="chart-card full">
+        <h3>CE Trend (Weekly Average)</h3>
+        <canvas id="chart-ce-trend"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-row" id="ce-agent-row" style="display:none">
+      <div class="chart-card full">
+        <h3>CE by Agent</h3>
+        <canvas id="chart-ce-agents"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-row" id="ce-tod-row" style="display:none">
+      <div class="chart-card full">
+        <h3>CE by Time of Day (UTC)</h3>
+        <canvas id="chart-ce-tod"></canvas>
+      </div>
+    </div>
+
+    <!-- What You Can Do — actionable recommendations -->
+    <div id="ce-recs-container" style="display:none">
+      <h3 style="font-size:15px; font-weight:700; margin: 24px 0 12px; color: var(--text-dim);">
+        &#x1F6E0;&#xFE0F; What You Can Do
+      </h3>
+      <div id="ce-recs-list"></div>
+    </div>
+
+    <div class="insight-card" id="ce-caveat" style="border-left-color: var(--text-muted); margin-top: 24px;">
+      <h3 style="color: var(--text-muted); font-size: 13px;">About This Metric</h3>
+      <p style="font-size: 12px;">Cognitive Efficiency is a composite measure of interaction efficiency
+      grounded in Cognitive Load Theory. It captures behavioral proxies for how effectively you direct
+      AI coding agents. Values are relative to your own baseline (z-scored within-user).
+      It does not control for task complexity &mdash; harder problems naturally require more interaction.
+      A positive trajectory over time is consistent with schema formation: developing more efficient
+      mental models for agent interaction.</p>
+    </div>
+  </div>
+
   <!-- Heatmap -->
   <div class="section">
     <div class="section-title"><span class="icon">&#x1F525;</span> Activity Heatmap (UTC)</div>
@@ -884,6 +933,319 @@ if (D.commit_time_series && D.commit_summary) {
       }
     }
   });
+}
+
+// ===== COGNITIVE EFFICIENCY =====
+if (D.ce && D.ce.available) {
+  document.getElementById('ce-section').style.display = '';
+  const diag = D.ce.diagnostics || {};
+
+  // Stat cards
+  const ceGrid = document.getElementById('ce-stats-grid');
+  const ceStats = [
+    { label: 'Scored Sessions', value: D.ce.total_scored_sessions.toLocaleString(),
+      detail: 'of ' + D.ce.total_sessions.toLocaleString() + ' total' },
+  ];
+  if (D.ce.learning_rate !== null) {
+    const lr = D.ce.learning_rate;
+    ceStats.push({
+      label: 'Learning Rate',
+      value: (lr >= 0 ? '+' : '') + lr.toFixed(3) + '/wk',
+      detail: lr > 0.05 ? 'improving \u2191' : lr < -0.05 ? 'declining \u2193' : 'stable \u2192',
+    });
+  }
+  if (diag.correction_rate !== undefined) {
+    ceStats.push({
+      label: 'Correction Rate',
+      value: (diag.correction_rate * 100).toFixed(0) + '%',
+      detail: 'sessions with redirects',
+    });
+  }
+  if (diag.avg_output_ratio !== undefined) {
+    ceStats.push({
+      label: 'Output Leverage',
+      value: diag.avg_output_ratio.toFixed(1) + '\u00d7',
+      detail: 'agent output per unit input',
+    });
+  }
+  if (D.ce.schema_index !== null && D.ce.schema_index !== undefined) {
+    const si = D.ce.schema_index;
+    ceStats.push({
+      label: 'Schema Index',
+      value: (si >= 0 ? '+' : '') + si.toFixed(3) + '/wk',
+      detail: 'difficulty-adjusted learning',
+    });
+  }
+  if (diag.tool_error_rate !== undefined && diag.total_tool_calls > 0) {
+    ceStats.push({
+      label: 'Tool Error Rate',
+      value: (diag.tool_error_rate * 100).toFixed(1) + '%',
+      detail: diag.total_tool_errors.toLocaleString() + ' of ' + diag.total_tool_calls.toLocaleString() + ' calls',
+    });
+  }
+  if (diag.avg_task_switching !== undefined) {
+    ceStats.push({
+      label: 'Context Switching',
+      value: (diag.avg_task_switching * 100).toFixed(0) + '%',
+      detail: 'of turns change focus',
+    });
+  }
+  if (diag.avg_phase_spread !== undefined) {
+    ceStats.push({
+      label: 'Phase Spread',
+      value: (diag.avg_phase_spread * 100).toFixed(0) + '%',
+      detail: 'work-type mixing per session',
+    });
+  }
+  if (diag.avg_episodes_per_session !== undefined && diag.avg_episodes_per_session > 0) {
+    ceStats.push({
+      label: 'Active Episodes',
+      value: diag.avg_episodes_per_session.toFixed(1),
+      detail: diag.avg_active_duration_min ? diag.avg_active_duration_min.toFixed(0) + ' min avg active' : '',
+    });
+  }
+  const nAgentsCE = Object.keys(D.ce.agent_ce || {}).length;
+  if (nAgentsCE > 1) {
+    ceStats.push({ label: 'Agents Compared', value: nAgentsCE });
+  }
+  ceStats.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'stat-card';
+    card.innerHTML = '<div class="label">' + s.label + '</div>'
+      + '<div class="value">' + s.value + '</div>'
+      + (s.detail ? '<div class="detail">' + s.detail + '</div>' : '');
+    ceGrid.appendChild(card);
+  });
+
+  // --- "What This Means" narrative ---
+  const narr = document.getElementById('ce-narrative-container');
+  const lr = D.ce.learning_rate;
+  let narrTitle, narrBody, narrColor;
+
+  const si = D.ce.schema_index;
+  if (lr !== null && lr < -0.05) {
+    narrColor = 'amber';
+    narrTitle = 'What This Means For Your Work';
+    let parts = [];
+    parts.push('A declining CE trajectory means your recent sessions took more effort to reach ' +
+      'the same outcomes compared to your earlier baseline. Concretely, this can look like:');
+    parts.push('<ul style="margin:8px 0 8px 20px; color:var(--text-dim); font-size:14px; line-height:1.7">' +
+      '<li>More correction cycles \u2014 the agent misunderstands and you have to redirect</li>' +
+      '<li>Longer prompt chains \u2014 you keep adding context to get what you need</li>' +
+      '<li>Lower output leverage \u2014 more of your time goes in per unit of agent output</li>' +
+      '<li>More context switching \u2014 jumping between unrelated tasks mid-session</li>' +
+      '<li>Higher tool error rate \u2014 more failed builds, tests, or file operations</li>' +
+      '</ul>');
+    if (si !== null && si > 0.05) {
+      parts.push('<strong>Important nuance:</strong> After adjusting for task difficulty, your ' +
+        '<strong>schema formation is actually positive</strong> (Schema Index: +' + si.toFixed(3) + '/wk). ' +
+        'The raw CE decline likely reflects harder problems, not declining skill. ' +
+        'You\u2019re learning \u2014 the work just got harder too.');
+      narrColor = 'blue';
+    } else {
+      parts.push('<strong>This does not mean your work quality dropped.</strong> ' +
+        'Harder problems, new codebases, and tool-switching all temporarily reduce efficiency. ' +
+        'The question is whether the decline reflects a <em>solvable</em> friction (tooling config, ' +
+        'prompting habits, context switching) or a <em>natural</em> one (harder problems = more iteration).');
+    }
+    if (diag.recent_trend === 'declining') {
+      parts.push(' The dip is concentrated in your <strong>most recent weeks</strong>, ' +
+        'which suggests a recent change in your workflow or problem set.');
+    }
+    narrBody = parts.join('');
+  } else if (lr !== null && lr > 0.05) {
+    narrColor = 'green';
+    narrTitle = 'What This Means For Your Work';
+    let body = 'A rising CE trajectory means you\u2019re getting better at directing AI agents \u2014 ' +
+      'fewer wasted correction cycles, more targeted prompts, less context switching, and more output per interaction. ' +
+      'In cognitive science terms, you\u2019re forming <strong>schemas</strong>: efficient mental ' +
+      'models for what works and what doesn\u2019t with each agent. ' +
+      'This is the learning signal we\u2019re looking for.';
+    if (si !== null && si > 0) {
+      body += ' Your Schema Index (+' + si.toFixed(3) + '/wk) confirms this \u2014 even after controlling ' +
+        'for task difficulty, your performance is improving.';
+    }
+    narrBody = body;
+  } else {
+    narrColor = 'blue';
+    narrTitle = 'What This Means For Your Work';
+    narrBody = 'A stable CE trajectory means you\u2019ve found a consistent rhythm with your agents. ' +
+      'Your interaction efficiency isn\u2019t changing much week to week \u2014 you\u2019re in a ' +
+      'steady state. The recommendations below can help identify specific areas to optimize.';
+  }
+
+  const narrCard = document.createElement('div');
+  narrCard.className = 'insight-card ' + narrColor;
+  narrCard.style.marginBottom = '24px';
+  narrCard.innerHTML = '<h3>' + narrTitle + '</h3><p>' + narrBody + '</p>';
+  narr.appendChild(narrCard);
+
+  // CE Trend line chart with regression
+  const ceWeeks = D.ce.weekly_ce.map(w => w.week.replace(/^\d{4}-/, ''));
+  const ceValues = D.ce.weekly_ce.map(w => w.ce_score);
+
+  const ceDatasets = [{
+    label: 'Weekly CE',
+    data: ceValues,
+    borderColor: ACCENT,
+    backgroundColor: ACCENT + '22',
+    fill: true,
+    pointRadius: 4,
+    pointHoverRadius: 6,
+    tension: 0.3,
+  }];
+
+  if (D.ce.learning_rate !== null && ceValues.length >= 3) {
+    const n = ceValues.length;
+    const xMean = (n - 1) / 2;
+    const yMean = ceValues.reduce((a, b) => a + b, 0) / n;
+    const slope = D.ce.learning_rate;
+    const intercept = yMean - slope * xMean;
+    const regLine = ceValues.map((_, i) => +(intercept + slope * i).toFixed(3));
+    ceDatasets.push({
+      label: 'Trend',
+      data: regLine,
+      borderColor: D.ce.learning_rate > 0 ? GREEN : (D.ce.learning_rate < -0.05 ? RED : '#8b8fa3'),
+      borderDash: [6, 4],
+      borderWidth: 2,
+      pointRadius: 0,
+      fill: false,
+      tension: 0,
+    });
+  }
+
+  new Chart(document.getElementById('chart-ce-trend'), {
+    type: 'line',
+    data: { labels: ceWeeks, datasets: ceDatasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: {
+        legend: { display: ceDatasets.length > 1, position: 'bottom', labels: { font: { size: 11 }, padding: 12 } },
+        tooltip: {
+          callbacks: {
+            afterLabel: function(ctx) {
+              if (ctx.datasetIndex === 0) {
+                const w = D.ce.weekly_ce[ctx.dataIndex];
+                return w ? w.n_sessions + ' sessions' : '';
+              }
+              return '';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false } },
+        y: { title: { display: true, text: 'CE (z-scored)', font: { size: 10 } } }
+      },
+      elements: { line: { tension: 0.3 } }
+    }
+  });
+
+  // Per-agent CE bar chart
+  const agentCE = D.ce.agent_ce || {};
+  const agentCENames = Object.keys(agentCE);
+  if (agentCENames.length > 1) {
+    document.getElementById('ce-agent-row').style.display = '';
+    const sortedAgentCE = agentCENames.sort((a, b) => agentCE[b].mean_ce - agentCE[a].mean_ce);
+
+    new Chart(document.getElementById('chart-ce-agents'), {
+      type: 'bar',
+      data: {
+        labels: sortedAgentCE.map(a => a.replace(/_/g, ' ')),
+        datasets: [{
+          data: sortedAgentCE.map(a => agentCE[a].mean_ce),
+          backgroundColor: sortedAgentCE.map(a => (agentColors[a] || '#555') + '88'),
+          borderColor: sortedAgentCE.map(a => agentColors[a] || '#555'),
+          borderWidth: 1,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true,
+        indexAxis: 'y',
+        scales: {
+          x: { title: { display: true, text: 'Mean CE (z-scored)', font: { size: 10 } } },
+          y: { grid: { display: false } }
+        },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              afterLabel: function(ctx) {
+                const name = sortedAgentCE[ctx.dataIndex];
+                return agentCE[name].n_sessions + ' sessions';
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // Time-of-day CE chart
+  const tod = diag.time_of_day_ce || {};
+  const todPeriods = ['morning', 'afternoon', 'evening', 'night'];
+  const todLabels = ['Morning (06-12)', 'Afternoon (12-17)', 'Evening (17-22)', 'Night (22-06)'];
+  const todData = todPeriods.map(p => tod[p] ? tod[p].mean_ce : null);
+  const todN = todPeriods.map(p => tod[p] ? tod[p].n_sessions : 0);
+
+  if (todData.filter(v => v !== null).length >= 2) {
+    document.getElementById('ce-tod-row').style.display = '';
+    new Chart(document.getElementById('chart-ce-tod'), {
+      type: 'bar',
+      data: {
+        labels: todLabels,
+        datasets: [{
+          data: todData,
+          backgroundColor: todData.map(v => v === null ? '#333' : (v > 0 ? GREEN + '77' : AMBER + '77')),
+          borderColor: todData.map(v => v === null ? '#555' : (v > 0 ? GREEN : AMBER)),
+          borderWidth: 1,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          x: { grid: { display: false } },
+          y: { title: { display: true, text: 'Mean CE', font: { size: 10 } } }
+        },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              afterLabel: function(ctx) {
+                return todN[ctx.dataIndex] + ' sessions';
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // --- Recommendations ---
+  const recs = D.ce.recommendations || [];
+  if (recs.length > 0) {
+    document.getElementById('ce-recs-container').style.display = '';
+    const recsList = document.getElementById('ce-recs-list');
+    const catIcons = { prompting: '\uD83D\uDCAC', tooling: '\u2699\uFE0F', workflow: '\uD83D\uDD04', timing: '\u23F0' };
+    const prioColors = { high: 'amber', medium: 'blue', low: 'green' };
+
+    recs.forEach(r => {
+      const card = document.createElement('div');
+      const color = prioColors[r.priority] || '';
+      card.className = 'insight-card ' + color;
+      card.style.marginBottom = '12px';
+
+      const icon = catIcons[r.category] || '\uD83D\uDCA1';
+      const badge = r.priority === 'high'
+        ? ' <span style="font-size:11px;background:var(--amber-dim);color:var(--amber);padding:2px 6px;border-radius:4px;margin-left:8px">HIGH IMPACT</span>'
+        : '';
+
+      card.innerHTML = '<h3>' + icon + ' ' + r.title + badge + '</h3>'
+        + '<p>' + r.body + '</p>';
+      recsList.appendChild(card);
+    });
+  }
 }
 
 // ===== HEATMAP =====
