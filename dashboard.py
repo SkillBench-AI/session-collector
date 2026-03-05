@@ -847,9 +847,61 @@ def _compute_ce_metrics(sessions: list[dict]) -> dict:
         "total_verify_actions": total_verify,
     }
 
+    # --- First month vs last month CE shift (concrete improvement measure) ---
+    first_last_shift = None
+    if len(weekly_ce) >= 4:
+        first_4 = weekly_ce[:4]
+        last_4 = weekly_ce[-4:]
+        first_avg = sum(w["ce_score"] for w in first_4) / len(first_4)
+        last_avg = sum(w["ce_score"] for w in last_4) / len(last_4)
+        first_last_shift = round(last_avg - first_avg, 3)
+
+    # --- Improvement streak (consecutive improving weeks) ---
+    improvement_streak = 0
+    for i in range(len(weekly_ce) - 1, 0, -1):
+        if weekly_ce[i]["ce_score"] > weekly_ce[i - 1]["ce_score"]:
+            improvement_streak += 1
+        else:
+            break
+
+    # --- Session highlights (best/worst by raw signal quality) ---
+    highlights = {}
+    raw_qualities = []
+    for i in range(n):
+        ce_row = raw_components[i]
+        # Raw quality proxy: convergence * extraction - friction penalty - switching penalty
+        rq = (ce_row["convergence"] * ce_row["extraction"]
+              - ce_row["friction"] * 10
+              - ce_row["task_switching"] * 15)
+        raw_qualities.append((i, rq))
+    if raw_qualities:
+        raw_qualities.sort(key=lambda x: x[1], reverse=True)
+        best_i = raw_qualities[0][0]
+        worst_i = raw_qualities[-1][0]
+        best_s = raw_components[best_i]
+        worst_s = raw_components[worst_i]
+        highlights = {
+            "best": {
+                "extraction": round(best_s["extraction"], 1),
+                "convergence": round(best_s["convergence"], 2),
+                "friction": round(best_s["friction"], 3),
+                "task_switching": round(best_s["task_switching"], 3),
+                "productive_actions": best_s.get("productive_actions", 0),
+                "agent": session_meta[best_i][1],
+            },
+            "worst": {
+                "extraction": round(worst_s["extraction"], 1),
+                "convergence": round(worst_s["convergence"], 2),
+                "friction": round(worst_s["friction"], 3),
+                "task_switching": round(worst_s["task_switching"], 3),
+                "productive_actions": worst_s.get("productive_actions", 0),
+                "agent": session_meta[worst_i][1],
+            },
+        }
+
     # --- Actionable recommendations ---
     recommendations = _generate_ce_recommendations(
-        diagnostics, agent_ce, learning_rate, schema_index
+        diagnostics, agent_ce, learning_rate, schema_index, driver_summary
     )
 
     return {
@@ -864,12 +916,16 @@ def _compute_ce_metrics(sessions: list[dict]) -> dict:
         "recommendations": recommendations,
         "drivers": driver_summary,
         "weekly_drivers": weekly_drivers,
+        "first_last_shift": first_last_shift,
+        "improvement_streak": improvement_streak,
+        "highlights": highlights,
     }
 
 
 def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
                                   learning_rate: float | None,
-                                  schema_index: float | None = None) -> list[dict]:
+                                  schema_index: float | None = None,
+                                  drivers: list[dict] | None = None) -> list[dict]:
     """Generate concrete, actionable recommendations from CE diagnostics.
 
     Each recommendation is {title, body, priority, category, copyable?, copyable_label?}.
@@ -877,6 +933,9 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
     copyable: a formatted text block the user can paste into CLAUDE.md or workflow docs.
     copyable_label: describes where to paste it.
     """
+    drivers = drivers or []
+    # Build driver impact lookup for estimated impact annotations
+    driver_impact = {d["name"]: abs(d["impact"]) for d in drivers}
     recs = []
     cr = diagnostics["correction_rate"]
     ts = diagnostics.get("avg_task_switching", 0)
