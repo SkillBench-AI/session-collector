@@ -893,15 +893,13 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
     # --- Task switching (paper's strongest finding) ---
     if ts > 0.25:
         recs.append({
-            "title": "Reduce mid-session context switching",
+            "title": f"Context switching is your #1 efficiency drain ({ts:.0%} of turns)",
             "body": (
-                f"About {ts:.0%} of your turn transitions involve a complete "
-                "context switch (jumping to unrelated files/modules). Research shows "
-                "this is the single strongest predictor of quality loss. Try: "
-                "finish the current loop (implement \u2192 test \u2192 verify) before "
-                "switching focus. If a tangent comes up, log it and come back later. "
-                "Consider starting a new session for new tasks rather than "
-                "pivoting mid-conversation."
+                "You're jumping to unrelated files mid-session in roughly "
+                f"{ts:.0%} of turns. This is the strongest predictor of quality loss "
+                "in the research. Efficient users finish the current loop "
+                "(implement \u2192 test \u2192 verify) before switching. "
+                "If a tangent comes up, log it and come back in a new session."
             ),
             "priority": "high",
             "category": "workflow",
@@ -935,13 +933,12 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
     # --- Tool error rate ---
     if ter > 0.15 and total_tc > 20:
         recs.append({
-            "title": "High tool error rate \u2014 debug churn detected",
+            "title": f"Tool errors are eating your time ({ter:.0%} failure rate)",
             "body": (
-                f"{total_te:,} of {total_tc:,} tool calls ({ter:.0%}) resulted in errors. "
-                "This suggests repeated failed attempts \u2014 builds that don't compile, "
-                "tests that keep failing, or file operations that miss their target. "
-                "When you hit 2 consecutive tool errors, stop and diagnose the root "
-                "cause before retrying."
+                f"{total_te:,} of {total_tc:,} tool calls failed. Efficient users "
+                "stop after 2 consecutive failures and diagnose the root cause "
+                "before retrying. This one CLAUDE.md snippet can cut your "
+                "retry loops significantly."
             ),
             "priority": "high",
             "category": "workflow",
@@ -972,12 +969,12 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
     # --- Information sprawl (v2) ---
     if sprawl_rate > 0.5:
         recs.append({
-            "title": "Agent is expanding scope beyond your requests",
+            "title": f"Agent is touching {sprawl_rate:.0%} more files than you asked for",
             "body": (
-                f"About {sprawl_rate:.0%} of the files/modules the agent touches "
-                "weren't in your original prompt. This scope creep increases cognitive "
-                "load \u2014 you have to evaluate changes you didn't ask for. The research "
-                "shows this is a major source of extraneous load."
+                "When the agent expands beyond your prompt scope, you have to "
+                "evaluate changes you didn't ask for. That's wasted attention. "
+                "Paste this into your CLAUDE.md and the agent will stay focused "
+                "on what you actually need."
             ),
             "priority": "high",
             "category": "workflow",
@@ -1074,11 +1071,11 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
     # --- Correction rate ---
     if cr > 0.25:
         recs.append({
-            "title": "Reduce correction cycles",
+            "title": f"You're correcting the agent in {cr:.0%} of turns \u2014 front-load context instead",
             "body": (
-                f"You're redirecting the agent in roughly {cr:.0%} of turns. "
-                "That's a lot of back-and-forth that doesn't produce output. "
-                "Front-load your project conventions into your CLAUDE.md."
+                "Each correction is a turn that doesn't produce output. "
+                "Efficient users encode their project conventions in CLAUDE.md "
+                "so the agent aligns on the first try."
             ),
             "priority": "high",
             "category": "prompting",
@@ -1122,12 +1119,11 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
     # --- Verification intensity (v2) ---
     if verify_int < 0.05 and total_tc > 50:
         recs.append({
-            "title": "Run more verification steps",
+            "title": f"Only {verify_int:.0%} of your actions are verification \u2014 errors compound silently",
             "body": (
-                f"Only {verify_int:.0%} of your tool actions are "
-                "test/build/lint runs. Without frequent verification, errors "
-                "compound silently. Adding verification loops catches issues "
-                "before they cascade into rework."
+                "Efficient users verify after each logical change (test, build, lint). "
+                "Without that, errors stack up and create rework later. "
+                "This CLAUDE.md rule makes the agent verify automatically."
             ),
             "priority": "high",
             "category": "workflow",
@@ -1227,12 +1223,11 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
                     f"- {display} (CE: {ce_val:+.2f}\u03c3, {n_sess} sessions): {role}")
 
             recs.append({
-                "title": f"Prefer {best_name} for complex work",
+                "title": f"You're {gap:.1f}\u03c3 more efficient with {best_name} than {worst_name}",
                 "body": (
-                    f"Your efficiency with {best_name} is "
-                    f"substantially higher than {worst_name} "
-                    f"(CE gap: {gap:.1f}\u03c3). Default to {best_name} when "
-                    f"both agents can handle the task."
+                    f"Default to {best_name} for anything non-trivial. "
+                    f"Based on your {best[1]['n_sessions']} sessions, it consistently "
+                    f"produces better outcomes with less friction."
                 ),
                 "priority": "high",
                 "category": "tooling",
@@ -1257,12 +1252,12 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
     if (schema_index is not None and schema_index < -0.1
             and learning_rate is not None and learning_rate < -0.05):
         recs.append({
-            "title": "Schema formation is stalling",
+            "title": "You're working harder but not building reusable knowledge",
             "body": (
-                "After adjusting for task difficulty, your performance isn't improving. "
-                "Working memory is being spent compensating for coordination overhead "
-                "rather than building stable mental models. Signs: re-reading the same "
-                "files repeatedly, not improving 'time to green' in familiar repos."
+                "After adjusting for task difficulty, your efficiency isn't improving. "
+                "Efficient users build mental models that transfer across sessions \u2014 "
+                "you're spending that capacity on coordination overhead instead. "
+                "This snippet helps the agent capture reusable patterns for you."
             ),
             "priority": "high",
             "category": "workflow",
@@ -1281,11 +1276,11 @@ def _generate_ce_recommendations(diagnostics: dict, agent_ce: dict,
         })
     elif learning_rate is not None and learning_rate > 0.1:
         recs.append({
-            "title": "Keep doing what you\u2019re doing",
+            "title": "\u2705 You're improving \u2014 lock in what's working",
             "body": (
-                "Your efficiency is improving over time \u2014 your mental models "
-                "are getting sharper. Document your most effective prompting "
-                "patterns so they survive context switches."
+                "Your efficiency is trending up. Document your most effective "
+                "prompting patterns in your CLAUDE.md so they survive context "
+                "switches and new projects."
             ),
             "priority": "low",
             "category": "workflow",
