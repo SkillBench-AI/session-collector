@@ -425,6 +425,13 @@
       </div>
     </div>
 
+    <div class="chart-row" id="ce-driver-row" style="display:none">
+      <div class="chart-card full">
+        <h3>What's Driving Your CE</h3>
+        <canvas id="chart-ce-drivers"></canvas>
+      </div>
+    </div>
+
     <!-- What You Can Do — actionable recommendations -->
     <div id="ce-recs-container" style="display:none">
       <h3 style="font-size:15px; font-weight:700; margin: 24px 0 12px; color: var(--text-dim);">
@@ -1004,6 +1011,35 @@ if (D.ce && D.ce.available) {
       detail: diag.avg_active_duration_min ? diag.avg_active_duration_min.toFixed(0) + ' min avg active' : '',
     });
   }
+  // v2 stat cards
+  if (diag.avg_quality_score !== undefined) {
+    ceStats.push({
+      label: 'Quality Score',
+      value: (diag.avg_quality_score * 100).toFixed(0) + '%',
+      detail: 'verification + closure + satisfaction',
+    });
+  }
+  if (diag.avg_throughput !== undefined && diag.avg_throughput > 0) {
+    ceStats.push({
+      label: 'Throughput',
+      value: diag.avg_throughput.toFixed(1) + '/min',
+      detail: (diag.total_productive_actions || 0).toLocaleString() + ' productive actions',
+    });
+  }
+  if (diag.avg_sprawl !== undefined) {
+    ceStats.push({
+      label: 'Scope Expansion',
+      value: (diag.avg_sprawl * 100).toFixed(0) + '%',
+      detail: 'agent files beyond your request',
+    });
+  }
+  if (diag.avg_verification_intensity !== undefined) {
+    ceStats.push({
+      label: 'Verify Rate',
+      value: (diag.avg_verification_intensity * 100).toFixed(1) + '%',
+      detail: (diag.total_verify_actions || 0).toLocaleString() + ' test/build/lint runs',
+    });
+  }
   const nAgentsCE = Object.keys(D.ce.agent_ce || {}).length;
   if (nAgentsCE > 1) {
     ceStats.push({ label: 'Agents Compared', value: nAgentsCE });
@@ -1182,6 +1218,58 @@ if (D.ce && D.ce.available) {
     });
   }
 
+  // --- Driver decomposition chart ---
+  const drivers = D.ce.drivers || [];
+  if (drivers.length > 0) {
+    document.getElementById('ce-driver-row').style.display = '';
+    // Show top 8 drivers sorted by absolute impact
+    const topD = drivers.slice(0, 8);
+    const dLabels = topD.map(d => d.name);
+    const dValues = topD.map(d => d.impact);
+    const dColors = topD.map(d => d.side === 'performance'
+      ? (d.impact >= 0 ? GREEN + '99' : RED + '99')
+      : (d.impact >= 0 ? GREEN + '99' : AMBER + '99'));
+    const dBorders = topD.map(d => d.side === 'performance'
+      ? (d.impact >= 0 ? GREEN : RED)
+      : (d.impact >= 0 ? GREEN : AMBER));
+
+    new Chart(document.getElementById('chart-ce-drivers'), {
+      type: 'bar',
+      data: {
+        labels: dLabels,
+        datasets: [{
+          data: dValues,
+          backgroundColor: dColors,
+          borderColor: dBorders,
+          borderWidth: 1,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true,
+        indexAxis: 'y',
+        scales: {
+          x: {
+            title: { display: true, text: 'Impact on CE variance', font: { size: 10 } },
+            grid: { color: '#2a2d3e44' },
+          },
+          y: { grid: { display: false }, ticks: { font: { size: 11 } } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              afterLabel: function(ctx) {
+                const d = topD[ctx.dataIndex];
+                return d.side + ' side \u2014 ' + d.direction;
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
   // Time-of-day CE chart
   const tod = diag.time_of_day_ce || {};
   const todPeriods = ['morning', 'afternoon', 'evening', 'night'];
@@ -1241,8 +1329,30 @@ if (D.ce && D.ce.available) {
         ? ' <span style="font-size:11px;background:var(--amber-dim);color:var(--amber);padding:2px 6px;border-radius:4px;margin-left:8px">HIGH IMPACT</span>'
         : '';
 
-      card.innerHTML = '<h3>' + icon + ' ' + r.title + badge + '</h3>'
+      let html = '<h3>' + icon + ' ' + r.title + badge + '</h3>'
         + '<p>' + r.body + '</p>';
+
+      // Copy-paste block for CLAUDE.md snippets
+      if (r.copyable) {
+        const blockId = 'cp-' + Math.random().toString(36).slice(2, 8);
+        html += '<div style="margin-top:12px">'
+          + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">'
+          + '<span style="font-size:11px;color:var(--text-dim)">'
+          + (r.copyable_label || 'Copy to CLAUDE.md') + '</span>'
+          + '<button onclick="(function(){var t=document.getElementById(\'' + blockId + '\');'
+          + 'navigator.clipboard.writeText(t.textContent).then(function(){'
+          + 'event.target.textContent=\'Copied!\';setTimeout(function(){event.target.textContent=\'Copy\'},1500)'
+          + '});})()" style="font-size:11px;padding:3px 10px;background:var(--surface2);'
+          + 'border:1px solid var(--border);border-radius:4px;color:var(--accent);cursor:pointer;'
+          + 'font-family:inherit">Copy</button></div>'
+          + '<pre id="' + blockId + '" style="background:var(--surface);border:1px solid var(--border);'
+          + 'border-radius:6px;padding:12px;font-size:12px;line-height:1.5;overflow-x:auto;'
+          + 'color:var(--text-dim);white-space:pre-wrap;word-break:break-word;max-height:300px;'
+          + 'overflow-y:auto">' + r.copyable.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>'
+          + '</div>';
+      }
+
+      card.innerHTML = html;
       recsList.appendChild(card);
     });
   }
