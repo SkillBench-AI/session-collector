@@ -1461,7 +1461,7 @@ def cmd_collect(args):
     # --- Bonus: Generate dashboard ---
     dashboard_path = None
     try:
-        from dashboard import compute_dashboard_data, generate_html
+        from ce_engine import compute_dashboard_data, generate_html
         print(f"\nGenerating dashboard...")
         dashboard_data = compute_dashboard_data(sanitized, report)
         html = generate_html(dashboard_data)
@@ -1492,7 +1492,7 @@ def cmd_collect(args):
 
 def cmd_dashboard(args):
     """Generate a standalone HTML dashboard from export + report data."""
-    from dashboard import build_dashboard
+    from ce_engine import build_dashboard
 
     export_path = Path(args.export)
     report_path = None

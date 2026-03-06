@@ -4,11 +4,18 @@
 Single-file Python CLI (`skillbench.py`) that classifies coding agent workspaces by GitHub visibility + OSS license, then computes agentic engineering metrics from CASS session data.
 
 ## Architecture
-- `skillbench.py` — entire CLI: scan, analyze, gather, push commands
+- `skillbench.py` — entire CLI: scan, analyze, gather, collect, push, dashboard commands
+- `session_parser.py` — parses raw agent session files (Claude, Gemini, Codex)
+- `sanitizer.py` — PII/secret redaction for exports
 - `skills/sanitize-export/` — skill + script to redact sensitive data from exports
 - `pyproject.toml` — packaging config (pip-installable, entry point: `skillbench:main`)
 - `SPEC.md` — full design spec (read-only reference, do not modify without asking)
 - `dist/` — all generated output (gitignored)
+
+**CE Engine (separate repo):** Dashboard generation, CE metrics, and recommendations
+live in `SkillBench-AI/ce-engine` (private, restricted access). Imported as `ce_engine`
+package. This separation protects proprietary formulas from research participant
+collaborators who have access to this repo.
 
 ## Privacy model (two levels)
 1. **Workspace classification (bootblock).** `skillbench scan` auto-includes only public GitHub repos with a recognized OSS license. Everything else is auto-excluded (commented out in `dist/bootblock.txt`). Users can manually override. This ensures only openly-licensed project sessions are shared by default.
@@ -33,7 +40,8 @@ After `gather`, users should sanitize the export before sharing by using the
 `sanitize-export` skill (`skills/sanitize-export/SKILL.md`) with their AI agent.
 
 ## Dependencies
-- Python ≥ 3.10 (stdlib only, no pip dependencies)
+- Python ≥ 3.10
+- `ce-engine` package (git dependency, private repo: `SkillBench-AI/ce-engine`)
 - External CLIs: `git`, `gh` (GitHub CLI), `cass` (coding_agent_session_search)
 - CASS SQLite database must exist (user runs `cass index --full` first)
 
