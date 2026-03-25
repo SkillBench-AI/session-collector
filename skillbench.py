@@ -299,6 +299,35 @@ def _extract_github_slug(remote_url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _gh_cli_available() -> bool:
+    """Check if the GitHub CLI is installed and authenticated."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+_GH_AVAILABLE: bool | None = None
+
+
+def _check_gh_once() -> bool:
+    """Check gh availability once and cache the result."""
+    global _GH_AVAILABLE
+    if _GH_AVAILABLE is None:
+        _GH_AVAILABLE = _gh_cli_available()
+        if not _GH_AVAILABLE:
+            print("  Note: GitHub CLI (gh) not found or not authenticated.")
+            print("  Install: brew install gh && gh auth login")
+            print("  Without gh, all repos are classified as private (safe default).\n")
+    return _GH_AVAILABLE
+
+
 def classify_github_repo(remote_url: str) -> dict | None:
     """Classify a GitHub repo's visibility + license in a single `gh` call.
 
@@ -311,6 +340,8 @@ def classify_github_repo(remote_url: str) -> dict | None:
     """
     slug = _extract_github_slug(remote_url)
     if not slug:
+        return None
+    if not _check_gh_once():
         return None
     try:
         result = subprocess.run(
@@ -1412,10 +1443,43 @@ def cmd_collect(args):
 
     if not allowed_paths:
         print("\nNo public/OSS workspaces found to include.")
-        print("To include private workspaces, use `skillbench scan` to generate")
-        print("bootblock.txt, then uncomment the workspaces you want to share.")
-        print("Or rerun: skillbench collect --include-excluded")
-        sys.exit(1)
+        if excluded and not getattr(args, "yes", False):
+            print("\nYou have private/unlicensed workspaces with session data.")
+            print("Data from these workspaces will be PII-scrubbed before export.")
+            print("Only sessions (your prompts + AI responses) are collected — not source code.\n")
+            print("Select workspaces to include:\n")
+            for i, e in enumerate(excluded):
+                agents = ", ".join(e["agents"]) if "agents" in e else "unknown"
+                convs = e.get("conversations", "?")
+                print(f"  [{i+1}] {e['path']}")
+                print(f"      {convs} sessions, {agents} ({e['reason']})")
+            print(f"\n  [a] Include all")
+            print(f"  [n] Skip — exit without exporting\n")
+            try:
+                response = input("Enter numbers separated by commas, 'a' for all, or 'n' to skip: ").strip().lower()
+                if response in ("n", "no", ""):
+                    print("Aborted.")
+                    sys.exit(0)
+                elif response == "a":
+                    allowed_paths = [e["path"] for e in excluded]
+                    print(f"\n  Including all {len(allowed_paths)} workspaces.")
+                else:
+                    indices = [int(x.strip()) - 1 for x in response.split(",")]
+                    allowed_paths = [excluded[i]["path"] for i in indices if 0 <= i < len(excluded)]
+                    if not allowed_paths:
+                        print("No valid selections. Aborted.")
+                        sys.exit(0)
+                    print(f"\n  Including {len(allowed_paths)} workspace(s).")
+            except (KeyboardInterrupt, EOFError):
+                print("\nAborted.")
+                sys.exit(0)
+            except (ValueError, IndexError):
+                print("Invalid input. Aborted.")
+                sys.exit(0)
+        else:
+            print("No workspaces available to collect from.")
+            print("Or rerun: skillbench collect --include-excluded")
+            sys.exit(1)
 
     # Interactive confirmation
     if not getattr(args, "yes", False):
@@ -1543,19 +1607,32 @@ def cmd_collect(args):
     except Exception as e:
         print(f"  Dashboard generation skipped: {e}")
 
+    # Count workspaces
+    workspace_set = set()
+    for s in sanitized:
+        ws = s.get("workspace", "")
+        if ws:
+            workspace_set.add(ws)
+
     print(f"\n{'=' * 60}")
     print(f"  Collection complete!")
-    print(f"  {len(sanitized)} sessions, {total_msgs} messages")
+    print(f"  {len(sanitized)} sessions, {total_msgs} messages, {len(workspace_set)} workspace(s)")
     print(f"  Export:    {output_path} ({size_mb:.1f} MB)")
     print(f"  Report:    {report_path}")
     if dashboard_path:
         print(f"  Dashboard: {dashboard_path}")
-    print(f"  Bootblock: {BOOTBLOCK_FILE}")
     print(f"{'=' * 60}")
     print()
+    print(f"  >> Send this file to the SkillBench team:")
+    print(f"     {output_path}")
+    print()
+    print(f"  Upload to: https://drive.google.com/drive/folders/1SOrF1-VkCMoUxM4DDUZ2rD6rjlR7TFXP")
+    print()
+    print(f"  This file has been sanitized — API keys, emails, IPs, and home")
+    print(f"  paths have been redacted. No private repo data is included unless")
+    print(f"  you explicitly selected it above.")
     if dashboard_path:
-        print(f"Open {dashboard_path} in a browser to view your results.")
-    print("Next: skillbench push")
+        print(f"\n  Open {dashboard_path} in a browser to preview your results.")
 
 
 def cmd_dashboard(args):
