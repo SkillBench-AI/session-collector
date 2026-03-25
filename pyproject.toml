@@ -9,9 +9,7 @@ description = "SkillBench session-collector: agentic engineering metrics from CA
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-dependencies = [
-    "ce-engine @ git+https://github.com/SkillBench-AI/ce-engine.git",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
