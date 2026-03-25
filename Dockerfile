@@ -4,6 +4,10 @@ FROM python:3.10-slim
 ARG GH_VERSION=""
 ENV GH_VERSION=${GH_VERSION}
 
+# Install git (needed for git remote detection inside the container).
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+    && git config --system safe.directory '*'
+
 # Install GitHub CLI (gh) without apt.
 # This avoids Homebrew/Xcode and also avoids apt cache space issues in minimal Docker setups.
 RUN <<'PY' python3 -
