@@ -13,11 +13,13 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import sqlite3
 import subprocess
 import sys
 import time
+from configparser import ConfigParser
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,8 +29,13 @@ from urllib.parse import urlparse
 # Constants
 # ---------------------------------------------------------------------------
 
-CASS_DB_DEFAULT = Path.home() / "Library" / "Application Support" / \
-    "com.coding-agent-search.coding-agent-search" / "agent_search.db"
+CASS_DB_DEFAULT = (
+    Path.home()
+    / "Library"
+    / "Application Support"
+    / "com.coding-agent-search.coding-agent-search"
+    / "agent_search.db"
+)
 
 DIST_DIR = Path("dist")
 BOOTBLOCK_FILE = DIST_DIR / "bootblock.txt"
@@ -51,13 +58,39 @@ SKIP_PATTERNS = [
 
 def find_cass_db() -> Path:
     """Locate the CASS SQLite database."""
-    if CASS_DB_DEFAULT.exists():
-        return CASS_DB_DEFAULT
-    # Try XDG data dir on Linux
-    xdg = os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
-    linux_path = Path(xdg) / "coding-agent-search" / "agent_search.db"
-    if linux_path.exists():
-        return linux_path
+    # Allow overriding the CASS data directory explicitly.
+    data_dir = os.environ.get("CASS_DATA_DIR")
+    if data_dir:
+        env_db = Path(data_dir) / "agent_search.db"
+        if env_db.exists():
+            return env_db
+
+    candidates: list[Path] = []
+
+    system = platform.system()
+    if system == "Darwin":
+        candidates.extend([
+            # Current default used by this repo
+            CASS_DB_DEFAULT,
+            # Common CASS locations on macOS (older/newer layouts)
+            Path.home() / "Library" / "Application Support" / "coding-agent-search" / "coding-agent-search" / "agent_search.db",
+            Path.home() / "Library" / "Application Support" / "coding-agent-search" / "agent_search.db",
+        ])
+    elif system == "Linux":
+        xdg = os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))
+        candidates.append(Path(xdg) / "coding-agent-search" / "agent_search.db")
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "coding-agent-search" / "coding-agent-search" / "agent_search.db")
+
+    # Project-local fallback (some CASS builds use ./data/)
+    candidates.append(Path("data") / "agent_search.db")
+
+    for p in candidates:
+        if p.exists():
+            return p
+
     return None
 
 
@@ -225,7 +258,36 @@ def git_remote_url(folder: str) -> str | None:
         if result.returncode == 0:
             return result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+        # Fall back to parsing .git/config directly (useful in minimal containers
+        # where `git` may not be installed).
+        try:
+            git_path = Path(folder) / ".git"
+            git_dir = None
+            if git_path.is_dir():
+                git_dir = git_path
+            elif git_path.is_file():
+                # Worktree/submodule style: .git is a file with "gitdir: /path"
+                txt = git_path.read_text(errors="replace")
+                m = re.search(r"^gitdir:\s*(.+?)\s*$", txt, flags=re.MULTILINE)
+                if m:
+                    ref = m.group(1).strip()
+                    git_dir = (git_path.parent / ref).resolve()
+
+            if not git_dir:
+                return None
+
+            cfg = git_dir / "config"
+            if not cfg.exists():
+                return None
+
+            parser = ConfigParser(interpolation=None)
+            parser.read(cfg)
+            section = 'remote "origin"'
+            if parser.has_section(section) and parser.has_option(section, "url"):
+                url = parser.get(section, "url")
+                return url.strip() if url else None
+        except Exception:
+            return None
     return None
 
 
@@ -1341,12 +1403,18 @@ def cmd_collect(args):
 
     print(f"  Skipped (temp/transient): {skipped_count}")
 
+    include_excluded = getattr(args, "include_excluded", False)
     allowed_paths = [e["path"] for e in included]
+
+    if not allowed_paths and include_excluded:
+        # Explicit opt-in: proceed with excluded workspaces too.
+        allowed_paths = [e["path"] for e in (included + excluded)]
 
     if not allowed_paths:
         print("\nNo public/OSS workspaces found to include.")
         print("To include private workspaces, use `skillbench scan` to generate")
         print("bootblock.txt, then uncomment the workspaces you want to share.")
+        print("Or rerun: skillbench collect --include-excluded")
         sys.exit(1)
 
     # Interactive confirmation
@@ -2334,6 +2402,11 @@ def main():
     collect_p.add_argument("-o", "--output", help="Output file for sanitized export")
     collect_p.add_argument("-y", "--yes", action="store_true",
                            help="Skip interactive confirmation")
+    collect_p.add_argument(
+        "--include-excluded",
+        action="store_true",
+        help="Proceed even if no public/OSS repos were found (includes excluded workspaces too).",
+    )
 
     # dashboard
     dash_p = sub.add_parser("dashboard", help="Generate standalone HTML dashboard from export data")

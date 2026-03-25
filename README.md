@@ -93,6 +93,19 @@ skillbench gather
 
 All generated output goes to `dist/` (gitignored).
 
+### Docker quick start (Make)
+
+If you want a single reproducible command (and to avoid local PATH/toolchain issues),
+use the Docker-based Make targets. Outputs are written to **your host** `dist/` folder.
+
+```bash
+# Safe default: keep the privacy model (only public + OSS-licensed GitHub repos auto-included)
+make docker-collect
+
+# Opt-in: include excluded workspaces too (private/unlicensed/non-GitHub). Use with care.
+make docker-collect-all
+```
+
 ### Gemini CLI note
 
 Gemini CLI sessions are automatically detected and attributed to the correct project. The hash resolution in `scan` and the query expansion in `analyze`/`gather` both use `gemini_hash_for_path()` — a SHA-256 of the absolute project path, matching Gemini CLI's own `getProjectHash()` implementation.
