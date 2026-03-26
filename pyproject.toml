@@ -14,5 +14,8 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
+[tool.setuptools]
+py-modules = ["skillbench"]
+
 [project.scripts]
 skillbench = "skillbench:main"
