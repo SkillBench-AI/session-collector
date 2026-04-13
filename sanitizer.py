@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Deterministic pattern-based sanitizer for session data.
 
 Replaces the AI-driven sanitization skill with a fast, reproducible

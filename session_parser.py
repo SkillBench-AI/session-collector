@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Lightweight multi-agent session parser — replaces CASS dependency.
 
 Reads session data directly from local agent log files:
