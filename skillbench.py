@@ -1103,31 +1103,38 @@ def cmd_gather(args):
     if args.output or split == "none":
         output_path = Path(args.output) if args.output else DIST_DIR / "skillbench_export.json"
         output_path.write_text(json.dumps(export, indent=2, default=str))
+        output_paths = [output_path]
         total_msgs = sum(len(c["messages"]) for c in export)
         print(f"Exported {len(export)} conversations ({total_msgs} messages) to {output_path}")
 
     elif split == "weekly":
         by_week = defaultdict(list)
         for conv in export:
-            dt_str = conv.get("started_at")
-            if dt_str:
-                dt = datetime.fromisoformat(dt_str)
+            ts = conv.get("started_at")
+            if ts:
+                dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
                 week_label = f"{dt.isocalendar().year}_W{dt.isocalendar().week:02d}"
             else:
                 week_label = "unknown"
             by_week[week_label].append(conv)
+        output_paths = []
         for week_label, convs in sorted(by_week.items()):
             out = DIST_DIR / f"skillbench_export_{week_label}.json"
             out.write_text(json.dumps(convs, indent=2, default=str))
             total_msgs = sum(len(c["messages"]) for c in convs)
             print(f"  {week_label}: {len(convs)} conversations ({total_msgs} messages) → {out.name}")
+            output_paths.append(out)
+        output_path = output_paths[-1] if output_paths else DIST_DIR / "skillbench_export.json"
 
     elif split == "session":
+        output_paths = []
         for conv in export:
             session_id = conv.get("session_id", "unknown")
             out = DIST_DIR / f"skillbench_export_{session_id}.json"
             out.write_text(json.dumps([conv], indent=2, default=str))
+            output_paths.append(out)
         print(f"Exported {len(export)} sessions to {DIST_DIR}")
+        output_path = output_paths[-1] if output_paths else DIST_DIR / "skillbench_export.json"
 
     if full_mode:
         full_count = sum(1 for c in export if c.get("full_fidelity"))
@@ -1606,6 +1613,7 @@ def cmd_collect(args):
         output_path = Path(args.output) if args.output else DIST_DIR / "skillbench_export_sanitized.json"
         with open(output_path, "w") as f:
             json.dump(sanitized, f, indent=2, default=str)
+        output_paths = [output_path]
 
     elif split == "weekly":
         by_week = defaultdict(list)
