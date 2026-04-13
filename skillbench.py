@@ -1099,17 +1099,35 @@ def cmd_gather(args):
     conn.close()
 
     # Write to file
-    if args.output:
-        output_path = Path(args.output)
-    elif full_mode:
-        output_path = DIST_DIR / "skillbench_export_full.json"
-    else:
-        output_path = DIST_DIR / "skillbench_export.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(export, indent=2, default=str))
+    split = getattr(args, "split", "weekly")
+    if args.output or split == "none":
+        output_path = Path(args.output) if args.output else DIST_DIR / "skillbench_export.json"
+        output_path.write_text(json.dumps(export, indent=2, default=str))
+        total_msgs = sum(len(c["messages"]) for c in export)
+        print(f"Exported {len(export)} conversations ({total_msgs} messages) to {output_path}")
 
-    total_msgs = sum(len(c["messages"]) for c in export)
-    print(f"Exported {len(export)} conversations ({total_msgs} messages) to {output_path}")
+    elif split == "weekly":
+        by_week = defaultdict(list)
+        for conv in export:
+            dt_str = conv.get("started_at")
+            if dt_str:
+                dt = datetime.fromisoformat(dt_str)
+                week_label = f"{dt.isocalendar().year}_W{dt.isocalendar().week:02d}"
+            else:
+                week_label = "unknown"
+            by_week[week_label].append(conv)
+        for week_label, convs in sorted(by_week.items()):
+            out = DIST_DIR / f"skillbench_export_{week_label}.json"
+            out.write_text(json.dumps(convs, indent=2, default=str))
+            total_msgs = sum(len(c["messages"]) for c in convs)
+            print(f"  {week_label}: {len(convs)} conversations ({total_msgs} messages) → {out.name}")
+
+    elif split == "session":
+        for conv in export:
+            session_id = conv.get("session_id", "unknown")
+            out = DIST_DIR / f"skillbench_export_{session_id}.json"
+            out.write_text(json.dumps([conv], indent=2, default=str))
+        print(f"Exported {len(export)} sessions to {DIST_DIR}")
 
     if full_mode:
         full_count = sum(1 for c in export if c.get("full_fidelity"))
@@ -1582,13 +1600,46 @@ def cmd_collect(args):
     sanitizer.print_stats()
 
     # Write sanitized export
-    output_path = Path(args.output) if args.output else DIST_DIR / "skillbench_export_sanitized.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(sanitized, f, indent=2, default=str)
+    split = getattr(args, "split", "weekly")
 
-    size_mb = output_path.stat().st_size / (1024 * 1024)
+    if args.output or split == "none":
+        output_path = Path(args.output) if args.output else DIST_DIR / "skillbench_export_sanitized.json"
+        with open(output_path, "w") as f:
+            json.dump(sanitized, f, indent=2, default=str)
+
+    elif split == "weekly":
+        by_week = defaultdict(list)
+        for conv in sanitized:
+            dt_str = conv.get("started_at")
+            if dt_str:
+                dt = datetime.fromisoformat(str(dt_str)) if isinstance(dt_str, str) else datetime.fromtimestamp(dt_str / 1000)
+                week_label = f"{dt.isocalendar().year}_W{dt.isocalendar().week:02d}"
+            else:
+                week_label = "unknown"
+            by_week[week_label].append(conv)
+        output_paths = []
+        for week_label, convs in sorted(by_week.items()):
+            out = DIST_DIR / f"skillbench_export_sanitized_{week_label}.json"
+            with open(out, "w") as f:
+                json.dump(convs, f, indent=2, default=str)
+            print(f"  {week_label}: {len(convs)} sessions → {out.name}")
+            output_paths.append(out)
+        output_path = output_paths[-1] if output_paths else DIST_DIR / "skillbench_export_sanitized.json"
+
+    elif split == "session":
+        output_paths = []
+        for conv in sanitized:
+            session_id = conv.get("session_id", "unknown")
+            out = DIST_DIR / f"skillbench_export_sanitized_{session_id}.json"
+            with open(out, "w") as f:
+                json.dump([conv], f, indent=2, default=str)
+            output_paths.append(out)
+        output_path = output_paths[-1] if output_paths else DIST_DIR / "skillbench_export_sanitized.json"
+        print(f"  {len(sanitized)} session files → {DIST_DIR}")
+
+
     total_msgs = sum(len(s.get("messages", [])) for s in sanitized)
+    size_mb = sum(p.stat().st_size for p in output_paths) / (1024 * 1024)
 
     # --- Bonus: Generate dashboard ---
     dashboard_path = None
@@ -1617,23 +1668,34 @@ def cmd_collect(args):
     print(f"\n{'=' * 60}")
     print(f"  Collection complete!")
     print(f"  {len(sanitized)} sessions, {total_msgs} messages, {len(workspace_set)} workspace(s)")
-    print(f"  Export:    {output_path} ({size_mb:.1f} MB)")
+    print(f"  Total size: {size_mb:.1f} MB")
     print(f"  Report:    {report_path}")
+    if split == "none" or args.output:
+        print(f"  Export:    {output_path}")
+    else:
+        print(f"  Exports ({len(output_paths)} files):")
+        for p in output_paths:
+            print(f"    {p.name}")
     if dashboard_path:
         print(f"  Dashboard: {dashboard_path}")
     print(f"{'=' * 60}")
     print()
-    print(f"  >> Send this file to the SkillBench team:")
-    print(f"     {output_path}")
-    print()
-    print(f"  Upload to: https://drive.google.com/drive/folders/1SOrF1-VkCMoUxM4DDUZ2rD6rjlR7TFXP")
-    print()
+
+    if args.upload_guide:
+        print(f"  >> Send these files to the SkillBench team:")
+        if split == "none" or args.output:
+            print(f"     {output_path}")
+        else:
+            for p in output_paths:
+                print(f"     {p}")
+        print()
+        print(f"  Upload to: https://drive.google.com/drive/folders/1SOrF1-VkCMoUxM4DDUZ2rD6rjlR7TFXP")
+        print()
     print(f"  This file has been sanitized — API keys, emails, IPs, and home")
     print(f"  paths have been redacted. No private repo data is included unless")
     print(f"  you explicitly selected it above.")
     if dashboard_path:
         print(f"\n  Open {dashboard_path} in a browser to preview your results.")
-
 
 def cmd_dashboard(args):
     """Generate a standalone HTML dashboard from export + report data."""
@@ -2473,6 +2535,9 @@ def main():
                                "complete tool_use payloads (code diffs, edit contents, command outputs). "
                                "Without this flag, uses CASS flat content (tool blocks stubbed).")
 
+    # split export
+    gather_p.add_argument("--split", choices=["session", "weekly", "none"],
+                      default="weekly", help="How to split export files (default: weekly)")
     # collect (unified pipeline)
     collect_p = sub.add_parser("collect",
         help="One-command pipeline: scan → classify → analyze → export → sanitize")
@@ -2484,6 +2549,13 @@ def main():
         action="store_true",
         help="Proceed even if no public/OSS repos were found (includes excluded workspaces too).",
     )
+    # split export
+    collect_p.add_argument("--split", choices=["session", "weekly", "none"],
+                      default="weekly", help="How to split export files (default: weekly)")
+    
+    # upload guide
+    collect_p.add_argument("--upload-guide", action="store_true",
+                       help="Show upload instructions at the end")
 
     # dashboard
     dash_p = sub.add_parser("dashboard", help="Generate standalone HTML dashboard from export data")
