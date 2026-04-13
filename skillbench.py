@@ -1110,19 +1110,23 @@ def cmd_gather(args):
     elif split == "weekly":
         by_week = defaultdict(list)
         for conv in export:
-            ts = conv.get("started_at")
-            if ts:
-                dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-                week_label = f"{dt.isocalendar().year}_W{dt.isocalendar().week:02d}"
-            else:
-                week_label = "unknown"
-            by_week[week_label].append(conv)
+            msgs_by_week = defaultdict(list)
+            for msg in conv.get("messages", []):
+                created_at = msg.get("created_at")
+                if created_at:
+                    dt = datetime.fromisoformat(str(created_at)) if isinstance(created_at, str) else datetime.fromtimestamp(created_at / 1000, tz=timezone.utc)
+                    week_label = f"{dt.isocalendar().year}_W{dt.isocalendar().week:02d}"
+                else:
+                    week_label = "unknown"
+                msgs_by_week[week_label].append(msg)
+            for week_label, msgs in msgs_by_week.items():
+                by_week[week_label].append({**conv, "messages": msgs})
         output_paths = []
         for week_label, convs in sorted(by_week.items()):
             out = DIST_DIR / f"skillbench_export_{week_label}.json"
             out.write_text(json.dumps(convs, indent=2, default=str))
             total_msgs = sum(len(c["messages"]) for c in convs)
-            print(f"  {week_label}: {len(convs)} conversations ({total_msgs} messages) → {out.name}")
+            print(f"  {week_label}: {len(convs)} session slices, {total_msgs} messages → {out.name}")
             output_paths.append(out)
         output_path = output_paths[-1] if output_paths else DIST_DIR / "skillbench_export.json"
 
@@ -1618,19 +1622,24 @@ def cmd_collect(args):
     elif split == "weekly":
         by_week = defaultdict(list)
         for conv in sanitized:
-            dt_str = conv.get("started_at")
-            if dt_str:
-                dt = datetime.fromisoformat(str(dt_str)) if isinstance(dt_str, str) else datetime.fromtimestamp(dt_str / 1000)
-                week_label = f"{dt.isocalendar().year}_W{dt.isocalendar().week:02d}"
-            else:
-                week_label = "unknown"
-            by_week[week_label].append(conv)
+            msgs_by_week = defaultdict(list)
+            for msg in conv.get("messages", []):
+                created_at = msg.get("created_at")
+                if created_at:
+                    dt = datetime.fromisoformat(str(created_at)) if isinstance(created_at, str) else datetime.fromtimestamp(created_at / 1000, tz=timezone.utc)
+                    week_label = f"{dt.isocalendar().year}_W{dt.isocalendar().week:02d}"
+                else:
+                    week_label = "unknown"
+                msgs_by_week[week_label].append(msg)
+            for week_label, msgs in msgs_by_week.items():
+                by_week[week_label].append({**conv, "messages": msgs})
         output_paths = []
         for week_label, convs in sorted(by_week.items()):
             out = DIST_DIR / f"skillbench_export_sanitized_{week_label}.json"
             with open(out, "w") as f:
                 json.dump(convs, f, indent=2, default=str)
-            print(f"  {week_label}: {len(convs)} sessions → {out.name}")
+            total_msgs = sum(len(c["messages"]) for c in convs)
+            print(f"  {week_label}: {len(convs)} session slices, {total_msgs} messages → {out.name}")
             output_paths.append(out)
         output_path = output_paths[-1] if output_paths else DIST_DIR / "skillbench_export_sanitized.json"
 

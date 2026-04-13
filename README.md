@@ -16,14 +16,28 @@ That's it. The `collect` command will:
 1. **Scan** for coding agent sessions on your machine (Claude Code, Gemini CLI, Codex CLI)
 2. **Classify** your workspaces — only public, OSS-licensed repos are included by default
 3. **Analyze** your sessions and compute agentic engineering metrics
-4. **Export** your session data
+4. **Export** your session data, split by ISO week by default (e.g. `dist/skillbench_export_sanitized_2026_W12.json`)
 5. **Sanitize** the export automatically (redacts API keys, emails, private IPs, home paths, secrets)
 
-Output goes to `dist/`. The sanitized export is `dist/skillbench_export_sanitized.json`.
+Output goes to `dist/`.
+
+### Export split options
+
+By default, exports are split by ISO week (Monday–Sunday). You can change this with `--split`:
+
+```bash
+skillbench collect                   # weekly split (default): one file per ISO week
+skillbench collect --split session   # one file per session
+skillbench collect --split none      # single file (original behavior)
+```
 
 ### Share your results
 
-Upload `dist/skillbench_export_sanitized.json` to the shared Google Drive folder provided by the SkillBench team. No raw or unsanitized data — only the scrubbed export.
+Send the sanitized export file(s) from `dist/` to the SkillBench team. Add `--upload-guide` to print upload instructions at the end:
+
+```bash
+skillbench collect --upload-guide
+```
 
 ### Prerequisites
 
@@ -105,7 +119,7 @@ Computes agentic engineering metrics across three tiers:
 
 ### Step 4: Export
 
-Exports full conversation data (messages, timestamps, agents) for allowed workspaces.
+Exports full conversation data (messages, timestamps, agents) for allowed workspaces. Files are split by ISO week by default (`--split weekly`), producing one file per week (e.g. `skillbench_export_sanitized_2026_W12.json`). Use `--split session` for per-session files, or `--split none` for a single combined file.
 
 ### Step 5: Sanitize
 
