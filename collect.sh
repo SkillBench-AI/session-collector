@@ -104,7 +104,7 @@ else
     elif [ "$OS" = "Linux" ]; then
         # Use sudo if not root
         if [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo"; fi
-        command -v curl &>/dev/null || $SUDO apt update -qq && $SUDO apt install -y curl
+        command -v curl &>/dev/null || { $SUDO apt update -qq && $SUDO apt install -y curl; }
         curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
             | $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
