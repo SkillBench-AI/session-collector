@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """SkillBench session-collector CLI.
 
 Boot block tool + session-level analysis pipeline.

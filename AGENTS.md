@@ -40,7 +40,7 @@ After `gather`, users should sanitize the export before sharing by using the
 `sanitize-export` skill (`skills/sanitize-export/SKILL.md`) with their AI agent.
 
 ## Dependencies
-- Python ≥ 3.10
+- Python ≥ 3.9
 - `ce-engine` package (git dependency, private repo: `SkillBench-AI/ce-engine`)
 - External CLIs: `git`, `gh` (GitHub CLI), `cass` (coding_agent_session_search)
 - CASS SQLite database must exist (user runs `cass index --full` first)

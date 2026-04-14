@@ -2,14 +2,32 @@
 
 Collect and analyze your AI coding sessions locally. See how you work with AI — metrics, patterns, and insights — without any data leaving your machine until you choose to share.
 
+## Prerequisites
+
+- **Python 3.9+**
+- **GitHub CLI (`gh`)** — used to check repo visibility and licensing. Install: `brew install gh` (macOS) or see [cli.github.com](https://cli.github.com/). If `gh` is not installed, workspaces are classified as private by default (safe fallback).
+
+`collect.sh` handles installing `gh` automatically.
+
+> **GitHub authentication required:** `gh` must be authenticated before running. If not, you'll see a one-time code and a URL printed in the terminal — open the URL in your browser and enter the code to complete authentication. (`collect.sh` triggers this automatically if needed.)
+
 ## Quick start
 
+### macOS / Linux
 ```bash
-# Install
-pip install -e .
+bash collect.sh
+```
 
-# Collect, analyze, and sanitize — one command
+### Manual (if `collect.sh` fails due to environment issues)
+```bash
+pip install -e .
 skillbench collect
+```
+
+### Windows or if you hit/want to avoid environment issues:
+```bash
+make docker-collect      # public/OSS repos only
+make docker-collect-all  # include private repos too (including private/unlicensed workspaces)
 ```
 
 That's it. The `collect` command will:
@@ -19,39 +37,12 @@ That's it. The `collect` command will:
 4. **Export** your session data, split by ISO week by default (e.g. `dist/skillbench_export_sanitized_2026_W12.json`)
 5. **Sanitize** the export automatically (redacts API keys, emails, private IPs, home paths, secrets)
 
-Output goes to `dist/`.
-
-### Export split options
-
-By default, exports are split by ISO week (Monday–Sunday). You can change this with `--split`:
-
-```bash
-skillbench collect                   # weekly split (default): one file per ISO week
-skillbench collect --split session   # one file per session
-skillbench collect --split none      # single file (original behavior)
-```
+Output will be saved in `dist/`.
 
 ### Share your results
 
-Send the sanitized export file(s) from `dist/` to the SkillBench team. Add `--upload-guide` to print upload instructions at the end:
+Send the sanitized export file(s) from `dist/` to the SkillBench team. This may be a single file (`skillbench_export_sanitized.json`) or multiple weekly/per-session files. No raw or unsanitized data — only the scrubbed export.
 
-```bash
-skillbench collect --upload-guide
-```
-
-### Prerequisites
-
-- **Python 3.10+**
-- **GitHub CLI (`gh`)** — used to check repo visibility and licensing. Install: `brew install gh` (macOS) or see [cli.github.com](https://cli.github.com/). If `gh` is not installed, workspaces are classified as private by default (safe fallback).
-
-### Docker alternative
-
-If you hit environment issues (Xcode, Rust conflicts, etc.):
-
-```bash
-make docker-collect      # public/OSS repos only
-make docker-collect-all  # include private repos too
-```
 
 ## Privacy & data policy
 
