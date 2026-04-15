@@ -42,6 +42,11 @@ DIST_DIR = Path("dist")
 BOOTBLOCK_FILE = DIST_DIR / "bootblock.txt"
 
 GEMINI_TMP_DIR = Path.home() / ".gemini" / "tmp"
+PILOT_ALLOWED_GITHUB_ORGS = [
+    "andela-technology",
+    "woven-teams",
+    "woven-reviews",
+]
 
 # Paths to skip (after Gemini hash resolution)
 SKIP_PATTERNS = [
@@ -300,6 +305,152 @@ def _extract_github_slug(remote_url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def extract_github_org_from_remote(remote_url: str) -> str | None:
+    """Extract the GitHub org/user from a GitHub remote URL."""
+    slug = _extract_github_slug(remote_url)
+    if not slug:
+        return None
+    owner, _, _repo = slug.partition("/")
+    return owner.lower() or None
+
+
+def normalize_allowed_orgs(orgs: list[str] | None) -> list[str]:
+    """Normalize CLI-provided allowed orgs into lowercase unique names."""
+    if not orgs:
+        return []
+
+    normalized = []
+    seen = set()
+    for raw in orgs:
+        for candidate in str(raw).split(","):
+            org = candidate.strip().lower()
+            if org and org not in seen:
+                normalized.append(org)
+                seen.add(org)
+    return normalized
+
+
+def format_allowed_orgs(allowed_orgs: list[str]) -> str:
+    """Return a human-readable allowlist label."""
+    return ", ".join(allowed_orgs) if allowed_orgs else "(none)"
+
+
+def get_repo_scope_decision(remote_url: str | None, allowed_orgs: list[str]) -> dict:
+    """Classify a repo against the GitHub org allowlist."""
+    if not allowed_orgs:
+        return {
+            "allowed": False,
+            "scope": "unknown",
+            "classification": "no_allowed_orgs_configured",
+            "remote_org": None,
+        }
+
+    if not remote_url:
+        return {
+            "allowed": False,
+            "scope": "unknown",
+            "classification": "no_git_remote",
+            "remote_org": None,
+        }
+
+    remote_org = extract_github_org_from_remote(remote_url)
+    if not remote_org:
+        return {
+            "allowed": False,
+            "scope": "unknown",
+            "classification": "no_github_remote",
+            "remote_org": None,
+        }
+
+    if remote_org in allowed_orgs:
+        return {
+            "allowed": True,
+            "scope": "approved",
+            "classification": "github_org_match",
+            "remote_org": remote_org,
+        }
+
+    return {
+        "allowed": False,
+        "scope": "external",
+        "classification": "github_org_mismatch",
+        "remote_org": remote_org,
+    }
+
+
+def classify_workspace_entry(path: str, info: dict, allowed_orgs: list[str]) -> dict:
+    """Build a workspace classification entry used by scan/collect."""
+    remote = git_remote_url(path)
+    gh = classify_github_repo(remote) if remote else None
+    repo_scope = get_repo_scope_decision(remote, allowed_orgs)
+
+    if gh:
+        public = gh["is_public"]
+        license_key = gh["license_key"]
+        license_name = gh["license_name"]
+        oss = license_key is not None and license_key != "other"
+        license_id = license_name or license_key
+    else:
+        public = None
+        license_key = None
+        license_id = detect_license_local(path)
+        oss = False
+
+    entry = {
+        "path": path,
+        "remote": remote,
+        "remote_org": repo_scope["remote_org"],
+        "repo_scope": repo_scope["scope"],
+        "repo_classification": repo_scope["classification"],
+        "license": license_id,
+        "public": public,
+        "oss": oss,
+        "agents": sorted(set(info["agents"])),
+        "conversations": info["total_conversations"],
+        "user_messages": info["total_user_messages"],
+    }
+
+    if repo_scope["allowed"] and public and oss:
+        entry["reason"] = f"{license_id}, public, approved GitHub org"
+        entry["auto_include"] = True
+        entry["selection_allowed"] = True
+        return entry
+
+    reasons = []
+    if not repo_scope["allowed"]:
+        classification = repo_scope["classification"]
+        if classification == "github_org_mismatch":
+            reasons.append(
+                f"outside allowed orgs ({repo_scope['remote_org']})",
+            )
+        elif classification == "no_github_remote":
+            reasons.append("no GitHub remote")
+        elif classification == "no_git_remote":
+            reasons.append("no git remote")
+        elif classification == "no_allowed_orgs_configured":
+            reasons.append("no allowed orgs configured")
+
+    if gh:
+        if not public:
+            reasons.append("private repo")
+        if license_key is None:
+            reasons.append("no LICENSE file")
+        elif license_key == "other":
+            reasons.append("unrecognized license in LICENSE file")
+    else:
+        if remote and repo_scope["classification"] not in {"no_github_remote", "github_org_mismatch"}:
+            reasons.append("not a GitHub repo")
+        if license_id:
+            reasons.append(f"manifest license: {license_id}")
+        elif repo_scope["classification"] not in {"no_git_remote", "no_github_remote"}:
+            reasons.append("no license detected")
+
+    entry["reason"] = ", ".join(reasons) if reasons else "unknown"
+    entry["auto_include"] = False
+    entry["selection_allowed"] = repo_scope["allowed"]
+    return entry
+
+
 def _gh_cli_available() -> bool:
     """Check if the GitHub CLI is installed and authenticated."""
     try:
@@ -401,6 +552,9 @@ def detect_license_local(folder: str) -> str | None:
 
 def cmd_scan(args):
     """Scan CASS index, classify workspaces, generate bootblock.txt."""
+    allowed_orgs = normalize_allowed_orgs(
+        getattr(args, "allowed_orgs", PILOT_ALLOWED_GITHUB_ORGS),
+    )
     db_path = find_cass_db()
     if not db_path:
         print("ERROR: Could not find CASS database.", file=sys.stderr)
@@ -441,6 +595,7 @@ def cmd_scan(args):
 
     total = len(by_path)
     print(f"Classifying {total} workspace paths...")
+    print(f"Allowed GitHub orgs: {format_allowed_orgs(allowed_orgs)}")
 
     for i, (path, info) in enumerate(sorted(by_path.items(), key=lambda x: -x[1]["total_conversations"])):
         if is_skippable(path):
@@ -455,61 +610,18 @@ def cmd_scan(args):
         if (i + 1) % 10 == 0:
             print(f"  [{i+1}/{total}] classifying...", end="\r")
 
-        remote = git_remote_url(path)
-        gh = classify_github_repo(remote) if remote else None
+        entry = classify_workspace_entry(path, info, allowed_orgs)
 
-        if gh:
-            # GitHub API: single call for visibility + license (Licensee + SPDX)
-            public = gh["is_public"]
-            license_key = gh["license_key"]
-            license_name = gh["license_name"]
-            # A real license key (not "other") means GitHub's Licensee matched
-            # the LICENSE file to a known OSS license.
-            oss = license_key is not None and license_key != "other"
-            license_id = license_name or license_key
-        else:
-            # Non-GitHub repo: no reliable license detection available
-            public = None
-            license_id = detect_license_local(path)
-            oss = False  # manifest-only license can't satisfy LICENSE file requirement
-
-        entry = {
-            "path": path,
-            "remote": remote,
-            "license": license_id,
-            "public": public,
-            "oss": oss,
-            "agents": sorted(set(info["agents"])),
-            "conversations": info["total_conversations"],
-            "user_messages": info["total_user_messages"],
-        }
-
-        if public and oss:
-            entry["reason"] = f"{license_id}, public"
+        if entry["auto_include"]:
             included.append(entry)
         else:
-            reasons = []
-            if gh:
-                if not public:
-                    reasons.append("private repo")
-                if license_key is None:
-                    reasons.append("no LICENSE file")
-                elif license_key == "other":
-                    reasons.append("unrecognized license in LICENSE file")
-            else:
-                if not remote:
-                    reasons.append("no git remote")
-                else:
-                    reasons.append("not a GitHub repo")
-                if license_id:
-                    reasons.append(f"manifest license: {license_id}")
-                else:
-                    reasons.append("no license detected")
-            entry["reason"] = ", ".join(reasons) if reasons else "unknown"
             excluded.append(entry)
 
     print(f"\nClassification complete:")
-    print(f"  Auto-included (public/OSS): {len(included)}")
+    print(
+        "  Auto-included (approved org + public/OSS): "
+        f"{len(included)}"
+    )
     print(f"  Excluded (private/no-license): {len(excluded)}")
     print(f"  Skipped (temp/transient): {skipped}")
 
@@ -519,6 +631,7 @@ def cmd_scan(args):
     with open(output_path, "w") as f:
         f.write("# SkillBench Boot Block — auto-generated from CASS index + git/license scan\n")
         f.write("# Edit this file: add/remove folders, then run `skillbench analyze`\n")
+        f.write(f"# Allowed GitHub orgs: {format_allowed_orgs(allowed_orgs)}\n")
         f.write("#\n")
 
         if included:
@@ -1364,9 +1477,14 @@ def cmd_collect(args):
     from session_parser import SessionScanner
     from sanitizer import Sanitizer
 
+    allowed_orgs = normalize_allowed_orgs(
+        getattr(args, "allowed_orgs", PILOT_ALLOWED_GITHUB_ORGS),
+    )
+
     print("=" * 60)
     print("  SkillBench Collect")
     print("=" * 60)
+    print(f"Allowed GitHub orgs: {format_allowed_orgs(allowed_orgs)}")
 
     # --- Step 1: Scan ---
     print("\n[1/5] Scanning for coding agent sessions...")
@@ -1401,66 +1519,42 @@ def cmd_collect(args):
         if (i + 1) % 10 == 0:
             print(f"  [{i+1}/{len(summaries)}] classifying...", end="\r")
 
-        remote = git_remote_url(path)
-        gh = classify_github_repo(remote) if remote else None
+        entry = classify_workspace_entry(path, ws, allowed_orgs)
 
-        if gh:
-            public = gh["is_public"]
-            license_key = gh["license_key"]
-            license_name = gh["license_name"]
-            oss = license_key is not None and license_key != "other"
-            license_id = license_name or license_key
-        else:
-            public = None
-            license_id = detect_license_local(path)
-            oss = False
-
-        entry = {
-            "path": path,
-            "remote": remote,
-            "license": license_id,
-            "public": public,
-            "oss": oss,
-            "agents": ws["agents"],
-            "conversations": ws["total_conversations"],
-            "user_messages": ws["total_user_messages"],
-        }
-
-        if public and oss:
-            entry["reason"] = f"{license_id}, public"
+        if entry["auto_include"]:
             included.append(entry)
         else:
-            reasons = []
-            if gh:
-                if not public:
-                    reasons.append("private")
-                if license_key is None:
-                    reasons.append("no LICENSE")
-                elif license_key == "other":
-                    reasons.append("unrecognized license")
-            else:
-                if not remote:
-                    reasons.append("no git remote")
-                else:
-                    reasons.append("not GitHub")
-            entry["reason"] = ", ".join(reasons) if reasons else "unknown"
             excluded.append(entry)
 
+    selectable_excluded = [e for e in excluded if e["selection_allowed"]]
+    blocked_excluded = [e for e in excluded if not e["selection_allowed"]]
+
     # Show classification
-    print(f"\n  Auto-included (public + OSS license): {len(included)}")
+    print(f"\n  Auto-included (approved org + public + OSS license): {len(included)}")
     for e in included:
         agents = ", ".join(e["agents"])
         print(f"    {e['path']}")
         print(f"      {e['conversations']} sessions, {e['reason']}, {agents}")
 
-    print(f"  Excluded (private/no-license): {len(excluded)}")
-    if len(excluded) <= 10:
-        for e in excluded:
+    print(f"  Eligible for manual selection (approved org, not public/OSS): {len(selectable_excluded)}")
+    if len(selectable_excluded) <= 10:
+        for e in selectable_excluded:
             print(f"    {e['path']}  ({e['reason']})")
     else:
-        for e in excluded[:5]:
+        for e in selectable_excluded[:5]:
             print(f"    {e['path']}  ({e['reason']})")
-        print(f"    ... and {len(excluded) - 5} more")
+        print(f"    ... and {len(selectable_excluded) - 5} more")
+
+    print(f"  Blocked by repo scope: {len(blocked_excluded)}")
+    if len(blocked_excluded) <= 10:
+        for e in blocked_excluded:
+            org = e["remote_org"] or "not detected"
+            print(f"    {e['path']}  ({e['reason']}; GitHub org: {org})")
+    else:
+        for e in blocked_excluded[:5]:
+            org = e["remote_org"] or "not detected"
+            print(f"    {e['path']}  ({e['reason']}; GitHub org: {org})")
+        print(f"    ... and {len(blocked_excluded) - 5} more")
 
     print(f"  Skipped (temp/transient): {skipped_count}")
 
@@ -1468,21 +1562,27 @@ def cmd_collect(args):
     allowed_paths = [e["path"] for e in included]
 
     if not allowed_paths and include_excluded:
-        # Explicit opt-in: proceed with excluded workspaces too.
-        allowed_paths = [e["path"] for e in (included + excluded)]
+        # Explicit opt-in: proceed with approved-org workspaces that were excluded
+        # for privacy/license reasons, but never repos outside the allowlist.
+        allowed_paths = [e["path"] for e in (included + selectable_excluded)]
 
     if not allowed_paths:
-        print("\nNo public/OSS workspaces found to include.")
-        if excluded and not getattr(args, "yes", False):
+        print("\nNo approved public/OSS workspaces found to include.")
+        if selectable_excluded and not getattr(args, "yes", False):
             print("\nYou have private/unlicensed workspaces with session data.")
+            print(
+                f"Only repos in allowed GitHub orgs can be selected: {format_allowed_orgs(allowed_orgs)}."
+            )
             print("Data from these workspaces will be PII-scrubbed before export.")
             print("Only sessions (your prompts + AI responses) are collected — not source code.\n")
             print("Select workspaces to include:\n")
-            for i, e in enumerate(excluded):
+            for i, e in enumerate(selectable_excluded):
                 agents = ", ".join(e["agents"]) if "agents" in e else "unknown"
                 convs = e.get("conversations", "?")
+                org = e["remote_org"] or "not detected"
                 print(f"  [{i+1}] {e['path']}")
                 print(f"      {convs} sessions, {agents} ({e['reason']})")
+                print(f"      GitHub org: {org}")
             print(f"\n  [a] Include all")
             print(f"  [n] Skip — exit without exporting\n")
             try:
@@ -1491,11 +1591,15 @@ def cmd_collect(args):
                     print("Aborted.")
                     sys.exit(0)
                 elif response == "a":
-                    allowed_paths = [e["path"] for e in excluded]
+                    allowed_paths = [e["path"] for e in selectable_excluded]
                     print(f"\n  Including all {len(allowed_paths)} workspaces.")
                 else:
                     indices = [int(x.strip()) - 1 for x in response.split(",")]
-                    allowed_paths = [excluded[i]["path"] for i in indices if 0 <= i < len(excluded)]
+                    allowed_paths = [
+                        selectable_excluded[i]["path"]
+                        for i in indices
+                        if 0 <= i < len(selectable_excluded)
+                    ]
                     if not allowed_paths:
                         print("No valid selections. Aborted.")
                         sys.exit(0)
@@ -1507,7 +1611,7 @@ def cmd_collect(args):
                 print("Invalid input. Aborted.")
                 sys.exit(0)
         else:
-            print("No workspaces available to collect from.")
+            print("No workspaces available to collect from under the allowed GitHub org scope.")
             print("Or rerun: skillbench collect --include-excluded")
             sys.exit(1)
 
@@ -1527,6 +1631,7 @@ def cmd_collect(args):
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     with open(BOOTBLOCK_FILE, "w") as f:
         f.write("# SkillBench Boot Block — auto-generated by `skillbench collect`\n")
+        f.write(f"# Allowed GitHub orgs: {format_allowed_orgs(allowed_orgs)}\n")
         f.write("# Edit this file to add/remove workspaces\n#\n")
         for e in included:
             agents = ",".join(e["agents"])
@@ -2538,6 +2643,15 @@ def main():
     # scan
     scan_p = sub.add_parser("scan", help="Scan CASS index and generate bootblock.txt")
     scan_p.add_argument("-o", "--output", help=f"Output file (default: {BOOTBLOCK_FILE})")
+    scan_p.add_argument(
+        "--allowed-orgs",
+        nargs="+",
+        default=PILOT_ALLOWED_GITHUB_ORGS.copy(),
+        help=(
+            "Allowed GitHub orgs for workspace scope filtering "
+            f"(default: {' '.join(PILOT_ALLOWED_GITHUB_ORGS)})"
+        ),
+    )
 
     # analyze
     analyze_p = sub.add_parser("analyze", help="Compute agentic engineering metrics")
@@ -2574,6 +2688,15 @@ def main():
     # upload guide
     collect_p.add_argument("--upload-guide", action="store_true",
                        help="Show upload instructions at the end")
+    collect_p.add_argument(
+        "--allowed-orgs",
+        nargs="+",
+        default=PILOT_ALLOWED_GITHUB_ORGS.copy(),
+        help=(
+            "Allowed GitHub orgs for pilot repo scope filtering "
+            f"(default: {' '.join(PILOT_ALLOWED_GITHUB_ORGS)})"
+        ),
+    )
 
     # dashboard
     dash_p = sub.add_parser("dashboard", help="Generate standalone HTML dashboard from export data")

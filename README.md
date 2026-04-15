@@ -50,7 +50,7 @@ Send the sanitized export file(s) from `dist/` to the SkillBench team. This may 
 
 ### Two-level privacy model
 
-**Level 1 — Workspace filtering:** Only public GitHub repos with recognized OSS licenses are auto-included. Private repos, unlicensed projects, and non-GitHub repos are excluded by default. If no public repos are found, you'll be prompted to select private workspaces interactively.
+**Level 1 — Workspace filtering:** Only repositories in the allowed GitHub org scope are eligible. By default, the pilot build only allows `andela-technology`, `woven-teams`, and `woven-reviews`. Within that scope, public GitHub repos with recognized OSS licenses are auto-included. Private repos, unlicensed projects, and non-GitHub repos are excluded by default. If no public repos qualify, you'll be prompted to select only private workspaces that still fall inside the allowed org scope.
 
 **Level 2 — Content sanitization:** The export is automatically scrubbed using deterministic pattern matching. Redacted patterns include:
 - API keys and tokens (AWS, GitHub, Anthropic, OpenAI, Slack, Stripe, etc.)
@@ -99,7 +99,13 @@ For each workspace with sessions:
 1. **Skip filtering.** Drops macOS temp dirs, Cursor internal dirs, git worktrees, bare home directory.
 2. **GitHub classification.** Uses `gh repo view` to check visibility and license. Falls back gracefully if `gh` is not installed.
 3. **Auto-include rule.** A project is included only when it is **public on GitHub** AND has a **recognized OSS license**.
-4. **Interactive prompt.** If no public repos qualify, you're prompted to select private workspaces to include.
+4. **Interactive prompt.** If no public repos qualify, you're prompted to select private workspaces to include. The prompt shows the detected GitHub org and only offers repos that match the active allowlist.
+
+The allowlist can be overridden explicitly:
+
+```bash
+skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
+```
 
 ### Step 3: Analyze
 
