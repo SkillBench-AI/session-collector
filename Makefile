@@ -16,7 +16,7 @@ ifeq ($(INCLUDE_EXCLUDED),1)
 COLLECT_FLAGS += --include-excluded
 endif
 ifdef ALLOWED_ORGS
-COLLECT_FLAGS += --allowed-orgs $(ALLOWED_ORGS)
+COLLECT_FLAGS += --allowed-orgs $(foreach org,$(ALLOWED_ORGS),"$(org)")
 endif
 
 # Fixed mounts for agent session stores (read-only)

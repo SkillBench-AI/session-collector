@@ -102,14 +102,19 @@ else
             echo "⚠  Homebrew not found. Install gh manually: https://cli.github.com"
         fi
     elif [ "$OS" = "Linux" ]; then
-        # Use sudo if not root
-        if [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo"; fi
-        command -v curl &>/dev/null || { $SUDO apt update -qq && $SUDO apt install -y curl; }
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-            | $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-            | $SUDO tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-        $SUDO apt update -qq && $SUDO apt install -y gh
+        if command -v apt &>/dev/null && command -v dpkg &>/dev/null; then
+            # Debian/Ubuntu
+            if [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo"; fi
+            command -v curl &>/dev/null || { $SUDO apt update -qq && $SUDO apt install -y curl; }
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                | $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                | $SUDO tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            $SUDO apt update -qq && $SUDO apt install -y gh
+        else
+            echo "⚠  Auto-install not supported on this Linux distro."
+            echo "   Install gh manually: https://cli.github.com"
+        fi
     else
         echo "⚠  Unsupported OS. Install gh manually: https://cli.github.com"
     fi
