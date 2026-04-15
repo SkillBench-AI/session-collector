@@ -42,11 +42,7 @@ DIST_DIR = Path("dist")
 BOOTBLOCK_FILE = DIST_DIR / "bootblock.txt"
 
 GEMINI_TMP_DIR = Path.home() / ".gemini" / "tmp"
-PILOT_ALLOWED_GITHUB_ORGS = [
-    "andela-technology",
-    "woven-teams",
-    "woven-reviews",
-]
+PILOT_ALLOWED_GITHUB_ORGS = ["*"]
 
 # Paths to skip (after Gemini hash resolution)
 SKIP_PATTERNS = [
@@ -342,6 +338,14 @@ def get_repo_scope_decision(remote_url: str | None, allowed_orgs: list[str]) -> 
             "allowed": False,
             "scope": "unknown",
             "classification": "no_allowed_orgs_configured",
+            "remote_org": None,
+        }
+
+    if allowed_orgs == ["*"]:
+        return {
+            "allowed": True,
+            "scope": "approved",
+            "classification": "wildcard",
             "remote_org": None,
         }
 

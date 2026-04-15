@@ -15,6 +15,9 @@ COLLECT_FLAGS := -y
 ifeq ($(INCLUDE_EXCLUDED),1)
 COLLECT_FLAGS += --include-excluded
 endif
+ifdef ALLOWED_ORGS
+COLLECT_FLAGS += --allowed-orgs $(ALLOWED_ORGS)
+endif
 
 # Fixed mounts for agent session stores (read-only)
 AGENT_MOUNTS := \
