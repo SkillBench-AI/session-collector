@@ -11,7 +11,7 @@ Collect and analyze your AI coding sessions locally. See how you work with AI �
 
 > **GitHub authentication required:** `gh` must be authenticated before running. If not, you'll see a one-time code and a URL printed in the terminal — open the URL in your browser and enter the code to complete authentication. (`collect.sh` triggers this automatically if needed.)
 
-## Quick start — Andela pilot
+## Quick start — Andela Pilot
 
 ### macOS / Linux
 ```bash
@@ -30,7 +30,7 @@ make docker-collect     ALLOWED_ORGS="andela-technology woven-teams woven-review
 make docker-collect-all ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
 ```
 
-## Quick start
+## Quick start - General Use
 
 ### macOS / Linux
 ```bash
