@@ -20,7 +20,10 @@ bash andela-collect.sh
 
 ### Manual (if `andela-collect.sh` fails due to environment issues)
 ```bash
+git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
+cd session-collector
 pip install -e .
+source .venv/bin/activate   # required: skillbench is installed into the local venv, not global PATH
 skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
 ```
 
