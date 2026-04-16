@@ -287,6 +287,39 @@ def _git_config_list_merged(repo_root: str) -> str | None:
     return None
 
 
+def _git_remote_names(repo_root: str) -> list[str]:
+    """Return remote names for ``repo_root`` using Git itself."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_root, "remote"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return []
+
+
+def _git_remote_get_url(repo_root: str, remote_name: str) -> str | None:
+    """Return a normalized remote URL using ``git remote get-url``."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_root, "remote", "get-url", remote_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            return url or None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
 def _parse_url_insteadof_rules(config_list: str) -> list[tuple[str, str]]:
     """Parse ``url.<base>.insteadOf`` lines into ``(short_prefix, replacement_base)``.
 
@@ -314,6 +347,32 @@ def _expand_git_url_insteadof(url: str, rules: list[tuple[str, str]]) -> str:
     return url
 
 
+def _ssh_resolve_hostname(hostname: str | None) -> str | None:
+    """Resolve an SSH alias via ``ssh -G``.
+
+    This lets us honor Include directives, wildcard Host entries, and other
+    per-user SSH config that would be difficult to replicate safely in Python.
+    """
+    if not hostname:
+        return None
+    try:
+        result = subprocess.run(
+            ["ssh", "-G", hostname],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and parts[0].lower() == "hostname":
+                return parts[1].strip().lower() or None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
 def git_remote_url(folder: str) -> str | None:
     """Return a preferred remote URL, favoring GitHub remotes over origin."""
     root = _nearest_git_repo_root(folder)
@@ -338,6 +397,15 @@ def git_remote_url(folder: str) -> str | None:
             if name == "origin":
                 return url
         return remotes[0][1]
+
+    remotes = []
+    for name in _git_remote_names(root):
+        url = _git_remote_get_url(root, name)
+        if url:
+            remotes.append((name, url))
+    preferred = _pick_remote_url(remotes)
+    if preferred:
+        return preferred
 
     try:
         result = subprocess.run(
@@ -435,6 +503,10 @@ def _extract_github_slug(remote_url: str) -> str | None:
         if match:
             host = match.group(1)
             path = match.group(2)
+
+    resolved_host = _ssh_resolve_hostname(host)
+    if resolved_host:
+        host = resolved_host
 
     if not _looks_like_github_host(host):
         return None
