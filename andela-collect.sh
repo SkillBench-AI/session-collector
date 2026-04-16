@@ -17,16 +17,24 @@ echo "============================================================"
 echo ""
 
 # --- 0. Clone repo if not already inside it ---
-if [ ! -f "pyproject.toml" ]; then
+is_session_collector_repo() {
+    [ -f "pyproject.toml" ] && [ -f "skillbench.py" ]
+}
+
+if ! is_session_collector_repo; then
     if ! command -v git &>/dev/null; then
         echo "❌  git not found. Install it first:"
         echo "      macOS:  brew install git"
         echo "      Linux:  sudo apt install git"
         exit 1
     fi
-    if [ -d "$REPO_DIR" ]; then
+    if [ -d "$REPO_DIR/.git" ]; then
         echo "→  Repository already cloned. Updating..."
         git -C "$REPO_DIR" pull --ff-only
+    elif [ -d "$REPO_DIR" ]; then
+        echo "❌  '$REPO_DIR' exists but is not a git repository."
+        echo "   Remove it or choose a different working directory."
+        exit 1
     else
         echo "→  Cloning SkillBench session-collector..."
         git clone --depth 1 "$REPO_URL" "$REPO_DIR"
