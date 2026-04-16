@@ -340,6 +340,8 @@ def _resolve_ssh_alias(remote_url: str) -> str:
 
     Handles cases like `git@andela-github:andela-technology/andela.git` where
     the host is an alias for github.com in ~/.ssh/config.
+
+    Limitations: does not honor Include directives or wildcard Host patterns.
     """
     if "github.com" in remote_url:
         return remote_url
@@ -353,13 +355,13 @@ def _resolve_ssh_alias(remote_url: str) -> str:
         return remote_url
 
     try:
-        current_host = None
+        current_hosts: list[str] = []
         with open(ssh_config_path) as f:
             for line in f:
                 line = line.strip()
                 if line.lower().startswith("host "):
-                    current_host = line.split()[1]
-                elif line.lower().startswith("hostname ") and current_host == host_alias:
+                    current_hosts = line.split()[1:]
+                elif line.lower().startswith("hostname ") and host_alias in current_hosts:
                     hostname = line.split()[1]
                     if "github.com" in hostname:
                         return f"git@github.com:{path}"
