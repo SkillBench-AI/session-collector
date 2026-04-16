@@ -6,6 +6,8 @@ set -e
 #   e.g. bash andela-collect.sh --split none
 #        bash andela-collect.sh --upload-guide
 
+REPO_URL="https://github.com/SkillBench-AI/session-collector.git"
+REPO_DIR="session-collector"
 VENV_DIR=".venv"
 MIN_PYTHON_MINOR=9
 
@@ -13,6 +15,26 @@ echo "============================================================"
 echo "  SkillBench session-collector (Andela pilot)"
 echo "============================================================"
 echo ""
+
+# --- 0. Clone repo if not already inside it ---
+if [ ! -f "pyproject.toml" ]; then
+    if ! command -v git &>/dev/null; then
+        echo "❌  git not found. Install it first:"
+        echo "      macOS:  brew install git"
+        echo "      Linux:  sudo apt install git"
+        exit 1
+    fi
+    if [ -d "$REPO_DIR" ]; then
+        echo "→  Repository already cloned. Updating..."
+        git -C "$REPO_DIR" pull --ff-only
+    else
+        echo "→  Cloning SkillBench session-collector..."
+        git clone --depth 1 "$REPO_URL" "$REPO_DIR"
+    fi
+    cd "$REPO_DIR"
+    echo "✓  Repository ready"
+    echo ""
+fi
 
 # --- 1. Find Python 3.9+ ---
 PYTHON=""
@@ -70,25 +92,12 @@ fi
 VENV_PIP="$VENV_DIR/bin/pip"
 VENV_SKILLBENCH="$VENV_DIR/bin/skillbench"
 
-# --- 3. Check git ---
-if command -v git &>/dev/null; then
-    echo "✓  git found"
-else
-    echo "❌  git not found."
-    echo ""
-    echo "    Install it first:"
-    echo "      macOS:  brew install git"
-    echo "      Linux:  sudo apt install git"
-    echo ""
-    exit 1
-fi
-
-# --- 4. Install skillbench ---
+# --- 3. Install skillbench ---
 echo "→  Installing skillbench..."
 "$VENV_PIP" install --quiet -e .
 echo "✓  skillbench installed"
 
-# --- 5. Install gh CLI if missing ---
+# --- 4. Install gh CLI if missing ---
 echo ""
 if command -v gh &>/dev/null; then
     echo "✓  GitHub CLI already installed"
@@ -120,7 +129,7 @@ else
     fi
 fi
 
-# --- 6. gh auth ---
+# --- 5. gh auth ---
 if command -v gh &>/dev/null; then
     if gh auth status &>/dev/null; then
         GH_USER=$(gh api user --jq .login 2>/dev/null || echo "unknown")
@@ -131,7 +140,7 @@ if command -v gh &>/dev/null; then
     fi
 fi
 
-# --- 7. Run skillbench collect (Andela org scope) ---
+# --- 6. Run skillbench collect (Andela org scope) ---
 echo ""
 echo "============================================================"
 echo "  Running skillbench collect..."
