@@ -13,12 +13,21 @@ Collect and analyze your AI coding sessions locally. See how you work with AI �
 
 ## Quick start — Andela Pilot
 
-### macOS / Linux
+### Option A — Automatic (recommended, macOS / Linux)
+
+Installs and runs the collector in one step:
 ```bash
-bash andela-collect.sh
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/andela-collect.sh | bash
+```
+Requires Python 3.9+.
+
+To re-run after initial setup:
+```bash
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/andela-collect.sh | bash
 ```
 
-### Manual (if `andela-collect.sh` fails due to environment issues)
+### Option B — Manual
+
 ```bash
 git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
 cd session-collector
@@ -27,7 +36,14 @@ source .venv/bin/activate   # required: skillbench is installed into the local v
 skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
 ```
 
-### Windows or if you hit/want to avoid environment issues:
+To re-run after initial setup:
+```bash
+source session-collector/.venv/bin/activate
+skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
+```
+
+### Option C — Windows or Docker
+
 ```bash
 make docker-collect     ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
 make docker-collect-all ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
