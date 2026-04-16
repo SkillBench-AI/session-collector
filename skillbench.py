@@ -293,10 +293,89 @@ def git_remote_url(folder: str) -> str | None:
     return None
 
 
+def _apply_git_insteadof(remote_url: str) -> str:
+    """Apply git config url.insteadOf rewrites to a remote URL.
+
+    Handles cases like:
+      [url "git@github.com:"]
+          insteadOf = "gh:"
+      [url "git@andela-github:andela-technology"]
+          insteadOf = "andela:"
+    """
+    if "github.com" in remote_url:
+        return remote_url
+
+    rules = []
+    for config_path in [
+        os.path.expanduser("~/.gitconfig"),
+        os.path.expanduser("~/.config/git/config"),
+    ]:
+        if not os.path.isfile(config_path):
+            continue
+        try:
+            current_base = None
+            with open(config_path) as f:
+                for line in f:
+                    line = line.strip()
+                    m = re.match(r'^\[url\s+"(.+)"\]$', line)
+                    if m:
+                        current_base = m.group(1)
+                    elif line.lower().startswith("insteadof") and current_base:
+                        _, _, value = line.partition("=")
+                        rules.append((value.strip().strip('"'), current_base))
+        except Exception:
+            continue
+
+    # Apply longest matching prefix first
+    rules.sort(key=lambda r: len(r[0]), reverse=True)
+    for instead_of, base in rules:
+        if remote_url.startswith(instead_of):
+            return base + remote_url[len(instead_of):]
+
+    return remote_url
+
+
+def _resolve_ssh_alias(remote_url: str) -> str:
+    """Resolve SSH host aliases to their real hostnames using ~/.ssh/config.
+
+    Handles cases like `git@andela-github:andela-technology/andela.git` where
+    the host is an alias for github.com in ~/.ssh/config.
+
+    Limitations: does not honor Include directives or wildcard Host patterns.
+    """
+    if "github.com" in remote_url:
+        return remote_url
+    m = re.match(r"^(?:[^@]+@)?([^/:]+):(.*)", remote_url)
+    if not m:
+        return remote_url
+    host_alias, path = m.group(1), m.group(2)
+
+    ssh_config_path = os.path.expanduser("~/.ssh/config")
+    if not os.path.isfile(ssh_config_path):
+        return remote_url
+
+    try:
+        current_hosts: list[str] = []
+        with open(ssh_config_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.lower().startswith("host "):
+                    current_hosts = line.split()[1:]
+                elif line.lower().startswith("hostname ") and host_alias in current_hosts:
+                    hostname = line.split()[1]
+                    if "github.com" in hostname:
+                        return f"git@github.com:{path}"
+                    break
+    except Exception:
+        pass
+    return remote_url
+
+
 def _extract_github_slug(remote_url: str) -> str | None:
     """Extract owner/repo from a GitHub remote URL."""
     if not remote_url:
         return None
+    remote_url = _resolve_ssh_alias(_apply_git_insteadof(remote_url))
     m = re.search(r"github\.com[:/]([^/]+/[^/.]+?)(?:\.git)?$", remote_url)
     return m.group(1) if m else None
 
