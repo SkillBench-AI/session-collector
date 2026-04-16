@@ -1551,6 +1551,22 @@ def _compute_metrics(conversations) -> dict | None:
 # Unified collect command (replaces scan → analyze → gather → sanitize)
 # ---------------------------------------------------------------------------
 
+def _tty_input(prompt: str) -> str:
+    """Read user input from /dev/tty, falling back to stdin.
+
+    When the script is piped (e.g. curl | bash), stdin is not a terminal and
+    input() immediately hits EOF. Reading from /dev/tty directly lets us still
+    prompt the user interactively.
+    """
+    try:
+        with open("/dev/tty") as tty:
+            sys.stderr.write(prompt)
+            sys.stderr.flush()
+            return tty.readline().rstrip("\n")
+    except OSError:
+        return input(prompt)
+
+
 def cmd_collect(args):
     """One-command pipeline: scan → classify → analyze → export → sanitize.
 
@@ -1669,7 +1685,7 @@ def cmd_collect(args):
             print(f"\n  [a] Include all")
             print(f"  [n] Skip — exit without exporting\n")
             try:
-                response = input("Enter numbers separated by commas, 'a' for all, or 'n' to skip: ").strip().lower()
+                response = _tty_input("Enter numbers separated by commas, 'a' for all, or 'n' to skip: ").strip().lower()
                 if response in ("n", "no", ""):
                     print("Aborted.")
                     sys.exit(0)
@@ -1702,7 +1718,7 @@ def cmd_collect(args):
     if not getattr(args, "yes", False):
         print()
         try:
-            response = input("Continue with these workspaces? [Y/n] ")
+            response = _tty_input("Continue with these workspaces? [Y/n] ")
             if response.strip().lower() in ("n", "no"):
                 print("Aborted. Use `skillbench scan` to manually edit the workspace list.")
                 sys.exit(0)
