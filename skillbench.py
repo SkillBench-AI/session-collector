@@ -302,7 +302,7 @@ def _apply_git_insteadof(remote_url: str) -> str:
       [url "git@andela-github:andela-technology"]
           insteadOf = "andela:"
     """
-    if "github.com" in remote_url:
+    if re.search(r"github\.com[:/]", remote_url):
         return remote_url
 
     rules = []
@@ -343,7 +343,7 @@ def _resolve_ssh_alias(remote_url: str) -> str:
 
     Limitations: does not honor Include directives or wildcard Host patterns.
     """
-    if "github.com" in remote_url:
+    if re.search(r"github\.com[:/]", remote_url):
         return remote_url
     m = re.match(r"^(?:[^@]+@)?([^/:]+):(.*)", remote_url)
     if not m:
