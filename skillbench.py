@@ -250,134 +250,278 @@ def is_skippable(path: str) -> bool:
     return False
 
 
-def git_remote_url(folder: str) -> str | None:
-    """Return the git remote origin URL, or None."""
+def _nearest_git_repo_root(folder: str) -> str:
+    """Walk up from ``folder`` to the directory that contains a ``.git`` entry.
+
+    Used so monorepo subfolders (e.g. ``.../andela/backend``) resolve remotes
+    from the repository root. If no ``.git`` is found, returns ``folder`` as-is.
+    """
+    try:
+        p = Path(folder).resolve()
+    except OSError:
+        return folder
+    while True:
+        try:
+            if (p / ".git").exists():
+                return str(p)
+        except OSError:
+            pass
+        if p.parent == p:
+            return str(Path(folder).resolve())
+        p = p.parent
+
+
+def _git_config_list_merged(repo_root: str) -> str | None:
+    """Return effective ``git config -l`` for ``repo_root`` (global + local)."""
     try:
         result = subprocess.run(
-            ["git", "-C", folder, "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5,
+            ["git", "-C", repo_root, "config", "-l"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
-            return result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        # Fall back to parsing .git/config directly (useful in minimal containers
-        # where `git` may not be installed).
-        try:
-            git_path = Path(folder) / ".git"
-            git_dir = None
-            if git_path.is_dir():
-                git_dir = git_path
-            elif git_path.is_file():
-                # Worktree/submodule style: .git is a file with "gitdir: /path"
-                txt = git_path.read_text(errors="replace")
-                m = re.search(r"^gitdir:\s*(.+?)\s*$", txt, flags=re.MULTILINE)
-                if m:
-                    ref = m.group(1).strip()
-                    git_dir = (git_path.parent / ref).resolve()
-
-            if not git_dir:
-                return None
-
-            cfg = git_dir / "config"
-            if not cfg.exists():
-                return None
-
-            parser = ConfigParser(interpolation=None)
-            parser.read(cfg)
-            section = 'remote "origin"'
-            if parser.has_section(section) and parser.has_option(section, "url"):
-                url = parser.get(section, "url")
-                return url.strip() if url else None
-        except Exception:
-            return None
+            return result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
     return None
 
 
-def _apply_git_insteadof(remote_url: str) -> str:
-    """Apply git config url.insteadOf rewrites to a remote URL.
+def _git_remote_names(repo_root: str) -> list[str]:
+    """Return remote names for ``repo_root`` using Git itself."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_root, "remote"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return []
 
-    Handles cases like:
-      [url "git@github.com:"]
-          insteadOf = "gh:"
-      [url "git@andela-github:andela-technology"]
-          insteadOf = "andela:"
+
+def _git_remote_get_url(repo_root: str, remote_name: str) -> str | None:
+    """Return a normalized remote URL using ``git remote get-url``."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_root, "remote", "get-url", remote_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            return url or None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+def _parse_url_insteadof_rules(config_list: str) -> list[tuple[str, str]]:
+    """Parse ``url.<base>.insteadOf`` lines into ``(short_prefix, replacement_base)``.
+
+    Longest ``short_prefix`` wins first, matching Git's behavior for overlapping rules.
     """
-    if re.search(r"github\.com[:/]", remote_url):
-        return remote_url
-
-    rules = []
-    for config_path in [
-        os.path.expanduser("~/.gitconfig"),
-        os.path.expanduser("~/.config/git/config"),
-    ]:
-        if not os.path.isfile(config_path):
+    rules: list[tuple[str, str]] = []
+    for line in config_list.splitlines():
+        m = re.match(r"^url\.(.+)\.insteadof=(.*)$", line.strip(), re.IGNORECASE)
+        if not m:
             continue
-        try:
-            current_base = None
-            with open(config_path) as f:
-                for line in f:
-                    line = line.strip()
-                    m = re.match(r'^\[url\s+"(.+)"\]$', line)
-                    if m:
-                        current_base = m.group(1)
-                    elif line.lower().startswith("insteadof") and current_base:
-                        _, _, value = line.partition("=")
-                        rules.append((value.strip().strip('"'), current_base))
-        except Exception:
-            continue
-
-    # Apply longest matching prefix first
-    rules.sort(key=lambda r: len(r[0]), reverse=True)
-    for instead_of, base in rules:
-        if remote_url.startswith(instead_of):
-            return base + remote_url[len(instead_of):]
-
-    return remote_url
+        base, prefix = m.group(1), m.group(2)
+        if prefix:
+            rules.append((prefix, base))
+    rules.sort(key=lambda x: -len(x[0]))
+    return rules
 
 
-def _resolve_ssh_alias(remote_url: str) -> str:
-    """Resolve SSH host aliases to their real hostnames using ~/.ssh/config.
+def _expand_git_url_insteadof(url: str, rules: list[tuple[str, str]]) -> str:
+    """Apply ``url.*.insteadOf`` rewriting (same idea as ``git fetch`` / ``git ls-remote``)."""
+    if not url or not rules:
+        return url
+    for prefix, base in rules:
+        if url.startswith(prefix):
+            return base + url[len(prefix) :]
+    return url
 
-    Handles cases like `git@andela-github:andela-technology/andela.git` where
-    the host is an alias for github.com in ~/.ssh/config.
 
-    Limitations: does not honor Include directives or wildcard Host patterns.
+def _ssh_resolve_hostname(hostname: str | None) -> str | None:
+    """Resolve an SSH alias via ``ssh -G``.
+
+    This lets us honor Include directives, wildcard Host entries, and other
+    per-user SSH config that would be difficult to replicate safely in Python.
     """
-    if re.search(r"github\.com[:/]", remote_url):
-        return remote_url
-    m = re.match(r"^(?:[^@]+@)?([^/:]+):(.*)", remote_url)
-    if not m:
-        return remote_url
-    host_alias, path = m.group(1), m.group(2)
+    if not hostname:
+        return None
+    try:
+        result = subprocess.run(
+            ["ssh", "-G", hostname],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and parts[0].lower() == "hostname":
+                return parts[1].strip().lower() or None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
 
-    ssh_config_path = os.path.expanduser("~/.ssh/config")
-    if not os.path.isfile(ssh_config_path):
-        return remote_url
+
+def git_remote_url(folder: str) -> str | None:
+    """Return a preferred remote URL, favoring GitHub remotes over origin."""
+    root = _nearest_git_repo_root(folder)
+
+    config_text = _git_config_list_merged(root)
+    rules = _parse_url_insteadof_rules(config_text or "")
+
+    def _pick_remote_url(remotes: list[tuple[str, str]]) -> str | None:
+        if not remotes:
+            return None
+
+        github_remotes = [
+            (name, url) for name, url in remotes if _extract_github_slug(url)
+        ]
+        for name, url in github_remotes:
+            if name == "origin":
+                return url
+        if github_remotes:
+            return github_remotes[0][1]
+
+        for name, url in remotes:
+            if name == "origin":
+                return url
+        return remotes[0][1]
+
+    remotes = []
+    for name in _git_remote_names(root):
+        url = _git_remote_get_url(root, name)
+        if url:
+            remotes.append((name, url))
+    preferred = _pick_remote_url(remotes)
+    if preferred:
+        return preferred
 
     try:
-        current_hosts: list[str] = []
-        with open(ssh_config_path) as f:
-            for line in f:
-                line = line.strip()
-                if line.lower().startswith("host "):
-                    current_hosts = line.split()[1:]
-                elif line.lower().startswith("hostname ") and host_alias in current_hosts:
-                    hostname = line.split()[1]
-                    if "github.com" in hostname:
-                        return f"git@github.com:{path}"
-                    break
-    except Exception:
+        result = subprocess.run(
+            ["git", "-C", root, "config", "--get-regexp", r"^remote\..*\.url$"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            remotes = []
+            for line in result.stdout.splitlines():
+                match = re.match(r"^remote\.(.+)\.url\s+(.+)$", line.strip())
+                if match:
+                    raw = match.group(2).strip()
+                    remotes.append(
+                        (match.group(1), _expand_git_url_insteadof(raw, rules)),
+                    )
+            preferred = _pick_remote_url(remotes)
+            if preferred:
+                return preferred
+    except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
-    return remote_url
+
+    # Fall back to parsing .git/config directly (useful in minimal containers
+    # where `git` may not be installed, or when no origin remote exists).
+    try:
+        git_path = Path(root) / ".git"
+        git_dir = None
+        if git_path.is_dir():
+            git_dir = git_path
+        elif git_path.is_file():
+            # Worktree/submodule style: .git is a file with "gitdir: /path"
+            txt = git_path.read_text(errors="replace")
+            m = re.search(r"^gitdir:\s*(.+?)\s*$", txt, flags=re.MULTILINE)
+            if m:
+                ref = m.group(1).strip()
+                git_dir = (git_path.parent / ref).resolve()
+
+        if not git_dir:
+            return None
+
+        cfg = git_dir / "config"
+        if not cfg.exists():
+            return None
+
+        parser = ConfigParser(interpolation=None)
+        parser.read(cfg)
+        remotes = []
+        for section in parser.sections():
+            match = re.match(r'^remote "(.+)"$', section)
+            if match and parser.has_option(section, "url"):
+                raw = parser.get(section, "url")
+                if raw:
+                    remotes.append(
+                        (match.group(1), _expand_git_url_insteadof(raw.strip(), rules)),
+                    )
+        return _pick_remote_url(remotes)
+    except Exception:
+        return None
+    return None
+
+
+def _looks_like_github_host(hostname: str | None) -> bool:
+    """Best-effort match for GitHub hosts, including SSH aliases."""
+    if not hostname:
+        return False
+
+    host = hostname.lower()
+    return (
+        host == "github.com"
+        or host.endswith(".github.com")
+        or host.startswith("github")
+        or ".github." in host
+        or ".github-" in host
+        # Enterprise / SSH config aliases, e.g. git@andela-github:org/repo.git
+        or host.endswith("-github")
+        or host.startswith("github-")
+    )
 
 
 def _extract_github_slug(remote_url: str) -> str | None:
     """Extract owner/repo from a GitHub remote URL."""
     if not remote_url:
         return None
-    remote_url = _resolve_ssh_alias(_apply_git_insteadof(remote_url))
-    m = re.search(r"github\.com[:/]([^/]+/[^/.]+?)(?:\.git)?$", remote_url)
-    return m.group(1) if m else None
+
+    host = None
+    path = None
+
+    if "://" in remote_url:
+        parsed = urlparse(remote_url)
+        host = parsed.hostname
+        path = parsed.path
+    else:
+        match = re.match(r"(?:(?:[^@]+)@)?([^:]+):(.+)$", remote_url)
+        if match:
+            host = match.group(1)
+            path = match.group(2)
+
+    resolved_host = _ssh_resolve_hostname(host)
+    if resolved_host:
+        host = resolved_host
+
+    if not _looks_like_github_host(host):
+        return None
+
+    parts = [part for part in (path or "").strip("/").split("/") if part]
+    if len(parts) < 2:
+        return None
+
+    owner = parts[0]
+    repo = parts[1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not owner or not repo:
+        return None
+    return f"{owner}/{repo}"
 
 
 def extract_github_org_from_remote(remote_url: str) -> str | None:

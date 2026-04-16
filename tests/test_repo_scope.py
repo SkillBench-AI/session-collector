@@ -26,9 +26,33 @@ def test_extract_github_org_from_remote_handles_github_urls():
     )
     assert (
         skillbench.extract_github_org_from_remote(
+            "git@github.com-andela:andela-technology/andela.git"
+        )
+        == "andela-technology"
+    )
+    assert (
+        skillbench.extract_github_org_from_remote(
+            "git@github-andela:Andela-Technology/platform.git"
+        )
+        == "andela-technology"
+    )
+    assert (
+        skillbench.extract_github_org_from_remote(
+            "ssh://git@github-andela/Andela-Technology/platform.git"
+        )
+        == "andela-technology"
+    )
+    assert (
+        skillbench.extract_github_org_from_remote(
             "https://gitlab.com/andela/platform.git"
         )
         is None
+    )
+    assert (
+        skillbench.extract_github_org_from_remote(
+            "git@andela-github:andela-technology/andela.git"
+        )
+        == "andela-technology"
     )
 
 
@@ -208,3 +232,165 @@ def test_collect_prompt_displays_git_remote_org_for_selectable_workspaces(capsys
     assert "GitHub org: andela-technology" in output
     assert "blocked-private" in output
     assert "outside allowed orgs (someone)" in output
+
+
+def test_git_remote_url_falls_back_to_non_origin_github_remote(tmp_path):
+    repo = tmp_path / "repo"
+    git_dir = repo / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text(
+        """
+[core]
+    repositoryformatversion = 0
+[remote "upstream"]
+    url = git@github-andela:Andela-Technology/platform.git
+""".strip()
+    )
+
+    with patch.object(skillbench.subprocess, "run") as run:
+        run.return_value.returncode = 1
+        run.return_value.stdout = ""
+        assert (
+            skillbench.git_remote_url(str(repo))
+            == "git@github-andela:Andela-Technology/platform.git"
+        )
+
+
+def test_git_remote_url_prefers_github_remote_over_non_github_origin(tmp_path):
+    repo = tmp_path / "repo"
+    git_dir = repo / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text(
+        """
+[core]
+    repositoryformatversion = 0
+[remote "origin"]
+    url = ssh://git@gitlab.internal/team/platform.git
+[remote "upstream"]
+    url = git@github-andela:Andela-Technology/platform.git
+""".strip()
+    )
+
+    with patch.object(skillbench.subprocess, "run") as run:
+        run.return_value.returncode = 1
+        run.return_value.stdout = ""
+        assert (
+            skillbench.git_remote_url(str(repo))
+            == "git@github-andela:Andela-Technology/platform.git"
+        )
+
+
+def test_expand_git_url_insteadof_andela_prefix():
+    rules = skillbench._parse_url_insteadof_rules(
+        "url.git@andela-github:andela-technology.insteadof=andela:\n",
+    )
+    expanded = skillbench._expand_git_url_insteadof("andela:/andela.git", rules)
+    assert expanded == "git@andela-github:andela-technology/andela.git"
+
+
+def test_extract_github_org_from_remote_resolves_ssh_alias_via_ssh_g():
+    def fake_run(cmd, **kwargs):
+        r = SimpleNamespace(returncode=0, stdout="")
+        if cmd[:2] == ["ssh", "-G"]:
+            r.stdout = "hostname github.com\nuser git\n"
+        else:
+            r.returncode = 1
+        return r
+
+    with patch.object(skillbench.subprocess, "run", side_effect=fake_run):
+        assert (
+            skillbench.extract_github_org_from_remote(
+                "git@corp-gh:andela-technology/platform.git"
+            )
+            == "andela-technology"
+        )
+
+
+def test_git_remote_url_prefers_git_remote_get_url_resolution():
+    def fake_run(cmd, **kwargs):
+        r = SimpleNamespace(returncode=0, stdout="")
+        if cmd[:4] == ["git", "-C", "/tmp/repo", "config"] and "-l" in cmd:
+            r.stdout = ""
+        elif cmd == ["git", "-C", "/tmp/repo", "remote"]:
+            r.stdout = "origin\nupstream\n"
+        elif cmd == ["git", "-C", "/tmp/repo", "remote", "get-url", "origin"]:
+            r.stdout = "ssh://git@gitlab.internal/team/platform.git\n"
+        elif cmd == ["git", "-C", "/tmp/repo", "remote", "get-url", "upstream"]:
+            r.stdout = "git@github-andela:Andela-Technology/platform.git\n"
+        else:
+            r.returncode = 1
+            r.stdout = ""
+        return r
+
+    with patch.object(skillbench, "_nearest_git_repo_root", return_value="/tmp/repo"), patch.object(
+        skillbench.subprocess, "run", side_effect=fake_run
+    ):
+        assert (
+            skillbench.git_remote_url("/tmp/repo")
+            == "git@github-andela:Andela-Technology/platform.git"
+        )
+
+
+def test_git_remote_url_expands_global_insteadof(tmp_path):
+    repo = tmp_path / "repo"
+    git_dir = repo / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text(
+        """
+[core]
+    repositoryformatversion = 0
+[remote "origin"]
+    url = andela:/andela.git
+""".strip()
+    )
+
+    def fake_run(cmd, **kwargs):
+        r = SimpleNamespace(returncode=0, stdout="")
+        if cmd[:2] == ["git", "-C"] and "config" in cmd and "-l" in cmd:
+            r.stdout = "url.git@andela-github:andela-technology.insteadof=andela:\n"
+        elif "--get-regexp" in cmd:
+            r.stdout = "remote.origin.url andela:/andela.git\n"
+        else:
+            r.returncode = 1
+            r.stdout = ""
+        return r
+
+    with patch.object(skillbench.subprocess, "run", side_effect=fake_run):
+        assert (
+            skillbench.git_remote_url(str(repo))
+            == "git@andela-github:andela-technology/andela.git"
+        )
+
+
+def test_git_remote_url_subfolder_uses_parent_repo(tmp_path):
+    root = tmp_path / "mono"
+    sub = root / "backend"
+    sub.mkdir(parents=True)
+    git_dir = root / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "config").write_text(
+        """
+[core]
+    repositoryformatversion = 0
+[remote "origin"]
+    url = andela:/andela.git
+""".strip()
+    )
+
+    def fake_run(cmd, **kwargs):
+        r = SimpleNamespace(returncode=0, stdout="")
+        if cmd[:2] == ["git", "-C"] and "config" in cmd and "-l" in cmd:
+            r.stdout = "url.git@andela-github:andela-technology.insteadof=andela:\n"
+        elif "--get-regexp" in cmd:
+            assert cmd[2] == str(root)
+            r.stdout = "remote.origin.url andela:/andela.git\n"
+        else:
+            r.returncode = 1
+            r.stdout = ""
+        return r
+
+    with patch.object(skillbench.subprocess, "run", side_effect=fake_run):
+        assert (
+            skillbench.git_remote_url(str(sub))
+            == "git@andela-github:andela-technology/andela.git"
+        )
