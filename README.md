@@ -11,7 +11,26 @@ Collect and analyze your AI coding sessions locally. See how you work with AI �
 
 > **GitHub authentication required:** `gh` must be authenticated before running. If not, you'll see a one-time code and a URL printed in the terminal — open the URL in your browser and enter the code to complete authentication. (`collect.sh` triggers this automatically if needed.)
 
-## Quick start
+## Quick start — Andela Pilot
+
+### macOS / Linux
+```bash
+bash andela-collect.sh
+```
+
+### Manual (if `andela-collect.sh` fails due to environment issues)
+```bash
+pip install -e .
+skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
+```
+
+### Windows or if you hit/want to avoid environment issues:
+```bash
+make docker-collect     ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
+make docker-collect-all ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
+```
+
+## Quick start - General Use
 
 ### macOS / Linux
 ```bash
@@ -50,7 +69,7 @@ Send the sanitized export file(s) from `dist/` to the SkillBench team. This may 
 
 ### Two-level privacy model
 
-**Level 1 — Workspace filtering:** Only repositories in the allowed GitHub org scope are eligible. By default, the pilot build only allows `andela-technology`, `woven-teams`, and `woven-reviews`. Within that scope, public GitHub repos with recognized OSS licenses are auto-included. Private repos, unlicensed projects, and non-GitHub repos are excluded by default. If no public repos qualify, you'll be prompted to select only private workspaces that still fall inside the allowed org scope.
+**Level 1 — Workspace filtering:** Public GitHub repos with recognized OSS licenses are auto-included. Private repos, unlicensed projects, and non-GitHub repos are excluded by default. If no public repos qualify, you'll be prompted to select private workspaces manually. Use `--allowed-orgs` to restrict collection to specific GitHub orgs (e.g. for a pilot program).
 
 **Level 2 — Content sanitization:** The export is automatically scrubbed using deterministic pattern matching. Redacted patterns include:
 - API keys and tokens (AWS, GitHub, Anthropic, OpenAI, Slack, Stripe, etc.)
@@ -101,7 +120,7 @@ For each workspace with sessions:
 3. **Auto-include rule.** A project is included only when it is **public on GitHub** AND has a **recognized OSS license**.
 4. **Interactive prompt.** If no public repos qualify, you're prompted to select private workspaces to include. The prompt shows the detected GitHub org and only offers repos that match the active allowlist.
 
-The allowlist can be overridden explicitly:
+To restrict collection to specific GitHub orgs (e.g. for a pilot), pass `--allowed-orgs`:
 
 ```bash
 skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
@@ -121,6 +140,17 @@ Exports full conversation data (messages, timestamps, agents) for allowed worksp
 ### Step 5: Sanitize
 
 Runs the deterministic pattern-based sanitizer automatically. No manual step needed.
+
+## `collect` flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-o, --output` | `dist/skillbench_export_sanitized.json` | Output file path for the sanitized export |
+| `-y, --yes` | off | Skip interactive confirmation prompts |
+| `--split` | `weekly` | How to split export files: `weekly` (one file per ISO week), `session` (one file per session), or `none` (single combined file) |
+| `--include-excluded` | off | Include workspaces from the allowed org scope even if they're private or lack an OSS license (use when no public repos qualify) |
+| `--upload-guide` | off | Print upload instructions at the end of the run |
+| `--allowed-orgs` | all orgs (`*`) | Space-separated list of GitHub orgs to restrict collection to. Omit to collect from all orgs. |
 
 ## Advanced: Manual pipeline (CASS-based)
 
