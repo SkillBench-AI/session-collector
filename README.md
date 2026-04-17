@@ -42,7 +42,7 @@ Prefer a token to installing `gh`? Prefix the same command with `GH_TOKEN=…`
 (leading space keeps it out of shell history):
 
 ```bash
- GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx make docker-collect
+ GH_TOKEN=<YOUR_GITHUB_TOKEN> make docker-collect
 ```
 
 See [docs/gh-token.md](docs/gh-token.md) for token scopes and safe handling.

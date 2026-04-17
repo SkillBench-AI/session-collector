@@ -23,7 +23,7 @@ collection runs.
 ## 2. Use it for a single run
 
 ```bash
- GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx make docker-collect ALLOWED_ORGS="your-org"
+ GH_TOKEN=<YOUR_GITHUB_TOKEN> make docker-collect ALLOWED_ORGS="your-org"
 ```
 
 - Note the leading **space**: if your shell has `HISTCONTROL=ignorespace`
@@ -35,7 +35,7 @@ collection runs.
 ## 3. Reuse across runs (current shell only)
 
 ```bash
-export GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export GH_TOKEN=<YOUR_GITHUB_TOKEN>
 make docker-collect ALLOWED_ORGS="your-org"
 # …
 unset GH_TOKEN      # clear when done

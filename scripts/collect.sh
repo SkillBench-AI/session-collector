@@ -195,7 +195,7 @@ echo "  Installed command : $SKILLBENCH_BIN"
 echo "  Repo checkout     : $REPO_ROOT"
 echo ""
 echo "  To re-run later (exactly as just now):"
-echo "      $SKILLBENCH_BIN collect $*"
+echo "      $SKILLBENCH_BIN collect" "$@"
 echo ""
 if ! command -v skillbench &>/dev/null; then
     echo "  Hint: \`skillbench\` is not on PATH in this shell yet."

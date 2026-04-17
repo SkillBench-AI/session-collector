@@ -19,14 +19,16 @@ CONTAINER_HOME ?= /home/app
 # Safety: by default, keep the privacy model (only public + OSS auto-included).
 # Set INCLUDE_EXCLUDED=1 to opt-in to exporting excluded workspaces too.
 INCLUDE_EXCLUDED ?= 0
-# YES=1 skips all interactive confirmation prompts (including the private-repo
-# manual selection prompt). Use with care — without it, and with no auto-included
-# workspaces, you'll get a prompt inside the container.
+# YES=1 forces non-interactive mode (passes -y, skips all prompts).
+# YES=0 (default) lets recipe-time TTY detection decide: interactive shell →
+# leave -y off so users can answer prompts; no TTY (CI / cron / piped stdin) →
+# auto-inject -y so headless runs don't silently no-op at a prompt.
 YES ?= 0
+# `-y` added at recipe time based on YES or TTY presence. The $$( ... ) runs
+# inside the recipe shell, not at Makefile parse time, so its $(tty check)
+# reflects the real stdin state.
+YES_FLAG = $$( if [ "$(YES)" = "1" ] || ! [ -t 0 ]; then printf -- "-y"; fi )
 COLLECT_FLAGS :=
-ifeq ($(YES),1)
-COLLECT_FLAGS += -y
-endif
 ifeq ($(INCLUDE_EXCLUDED),1)
 COLLECT_FLAGS += --include-excluded
 endif
@@ -121,7 +123,7 @@ docker-collect: preflight-host preflight-gh docker-build
 		$(GH_MOUNTS) \
 		$(WORKSPACE_MOUNTS) \
 		"$(IMAGE)" \
-		python3 -m skillbench collect $(COLLECT_FLAGS)
+		python3 -m skillbench collect $(YES_FLAG) $(COLLECT_FLAGS)
 
 docker-collect-all:
 	$(MAKE) docker-collect INCLUDE_EXCLUDED=1

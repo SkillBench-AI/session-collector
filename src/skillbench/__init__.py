@@ -1837,9 +1837,18 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
     print("  [a] all    [n] cancel")
     try:
         response = _tty_input("> ").strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print("\nAborted.")
-        sys.exit(0)
+    except KeyboardInterrupt:
+        print("\nAborted by user.", file=sys.stderr)
+        sys.exit(130)  # standard SIGINT exit code
+    except EOFError:
+        # No TTY / stdin closed — headless run without --yes. Must be non-zero
+        # so CI/cron jobs don't silently report success with no export artifacts.
+        print(
+            "\nNo interactive input available (headless run?). Re-run with --yes "
+            "or under a TTY.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if response in ("n", "no", ""):
         print("Aborted.")
         sys.exit(0)
@@ -1976,9 +1985,16 @@ def cmd_collect(args):
             if response.strip().lower() in ("n", "no"):
                 print("Aborted. Edit dist/bootblock.txt or re-run with different --allowed-orgs.")
                 sys.exit(0)
-        except (KeyboardInterrupt, EOFError):
-            print("\nAborted.")
-            sys.exit(0)
+        except KeyboardInterrupt:
+            print("\nAborted by user.", file=sys.stderr)
+            sys.exit(130)
+        except EOFError:
+            print(
+                "\nNo interactive input available (headless run?). Re-run with --yes "
+                "or under a TTY.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     # Write bootblock.txt for compatibility with scan/analyze/gather
     DIST_DIR.mkdir(parents=True, exist_ok=True)
