@@ -2,24 +2,100 @@
 set -e
 
 # SkillBench session-collector
-# Usage: bash collect.sh [skillbench collect options]
-#   e.g. bash collect.sh --split none
-#        bash collect.sh --upload-guide
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/collect.sh | bash
+#   bash collect.sh [skillbench collect options]
+#
+# This script:
+#   1) Ensures the session-collector repo is cloned locally (handles `curl | bash`)
+#   2) Installs skillbench via pipx so the `skillbench` command is on PATH globally
+#      (no venv activate required)
+#   3) Runs `skillbench collect`
+#   4) Prints a clear re-run command so you never need to remember the env
 
-VENV_DIR=".venv"
+REPO_URL="https://github.com/SkillBench-AI/session-collector.git"
+REPO_DIR="session-collector"
 MIN_PYTHON_MINOR=9
+
+# --- Formatting helpers (match Makefile preflight style) -----------------
+C_RED=$'\033[31m'
+C_GREEN=$'\033[32m'
+C_RESET=$'\033[0m'
+BAR="────────────────────────────────────────────────────────────"
+
+ok()   { printf "%s✓  %s%s\n" "$C_GREEN" "$1" "$C_RESET"; }
+step() { printf "→  %s\n" "$1"; }
+
+# fail "headline" "hint line 1" "hint line 2" ...  → red boxed block, exit 1
+fail() {
+    local headline="$1"; shift
+    printf "%s%s%s\n" "$C_RED" "$BAR" "$C_RESET" >&2
+    printf "%s✗  %s%s\n" "$C_RED" "$headline" "$C_RESET" >&2
+    for line in "$@"; do
+        printf "%s   %s%s\n" "$C_RED" "$line" "$C_RESET" >&2
+    done
+    printf "%s%s%s\n" "$C_RED" "$BAR" "$C_RESET" >&2
+    exit 1
+}
 
 echo "============================================================"
 echo "  SkillBench session-collector"
 echo "============================================================"
 echo ""
 
-# --- 1. Find Python 3.9+ ---
+# ----------------------------------------------------------------------------
+# 0. Ensure we're sitting inside a cloned session-collector checkout
+# ----------------------------------------------------------------------------
+
+is_session_collector_repo() {
+    # Check for the migrated src-layout entry point. Earlier versions kept
+    # skillbench.py at the repo root; after the packaging refactor it moved to
+    # src/skillbench/__init__.py. We only check the new location — the old
+    # one no longer exists on current main.
+    [ -f "pyproject.toml" ] && [ -f "src/skillbench/__init__.py" ]
+}
+
+if ! is_session_collector_repo; then
+    if ! command -v git &>/dev/null; then
+        fail "git not found." \
+            "Install:" \
+            "  macOS:         brew install git" \
+            "  Debian/Ubuntu: sudo apt install git"
+    fi
+    if [ -d "$REPO_DIR/.git" ]; then
+        step "Repository already cloned. Updating..."
+        # Surface pull errors (network, divergence, non-ff) instead of
+        # continuing silently on a stale checkout. If the user has local
+        # changes, they can resolve by deleting $REPO_DIR and re-running.
+        if ! git -C "$REPO_DIR" pull --ff-only; then
+            fail "\`git pull --ff-only\` failed in '$REPO_DIR'." \
+                "The checkout may be stale or diverged from origin." \
+                "Fix manually, or remove the directory and re-run:" \
+                "  rm -rf '$REPO_DIR' && bash collect.sh"
+        fi
+    elif [ -d "$REPO_DIR" ]; then
+        fail "'$REPO_DIR' exists but is not a git repository." \
+            "Remove it or choose a different working directory."
+    else
+        step "Cloning SkillBench session-collector..."
+        git clone --depth 1 "$REPO_URL" "$REPO_DIR"
+    fi
+    cd "$REPO_DIR"
+    ok "Repository ready: $(pwd)"
+    echo ""
+fi
+
+REPO_ROOT="$(pwd)"
+
+# ----------------------------------------------------------------------------
+# 1. Find Python 3.9+
+# ----------------------------------------------------------------------------
+
 PYTHON=""
 for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 python; do
     if command -v "$candidate" &>/dev/null; then
-        version=$("$candidate" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
-        major=$("$candidate" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
+        version=$("$candidate" -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo 0)
+        major=$("$candidate" -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo 0)
         if [ "$major" = "3" ] && [ "$version" -ge "$MIN_PYTHON_MINOR" ] 2>/dev/null; then
             PYTHON="$candidate"
             break
@@ -28,113 +104,153 @@ for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 p
 done
 
 if [ -z "$PYTHON" ]; then
-    echo "❌  Python 3.9+ not found."
-    echo ""
-    echo "    Install it first:"
-    echo "      macOS:  brew install python@3.13"
-    echo "      Linux:  sudo apt install python3.9"
-    echo ""
-    exit 1
+    fail "Python 3.9+ not found." \
+        "Install:" \
+        "  macOS:         brew install python" \
+        "  Debian/Ubuntu: sudo apt install python3"
 fi
 
 PYTHON_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
-echo "✓  Python $PYTHON_VERSION found ($PYTHON)"
+ok "Python $PYTHON_VERSION found ($PYTHON)"
 
-# --- 2. Create venv ---
-VENV_PYTHON_BIN="$VENV_DIR/bin/python"
-VENV_PIP_BIN="$VENV_DIR/bin/pip"
-NEEDS_VENV=0
+# ----------------------------------------------------------------------------
+# 2. Require pipx so `skillbench` ends up on PATH without venv activate.
+#    We intentionally do NOT auto-bootstrap pipx here — a missing pipx is
+#    usually a signal that the user's Python packaging env is non-standard,
+#    and an unattended `pip install --user pipx` in those envs causes more
+#    problems than it solves. We give actionable install instructions.
+# ----------------------------------------------------------------------------
 
-if [ ! -d "$VENV_DIR" ]; then
-    NEEDS_VENV=1
-elif ! "$VENV_PYTHON_BIN" --version &>/dev/null; then
-    NEEDS_VENV=1
-elif ! "$VENV_PIP_BIN" --version &>/dev/null; then
-    NEEDS_VENV=1
-else
-    VENV_PYTHON_VERSION=$("$VENV_PYTHON_BIN" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
-    CURRENT_PYTHON_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    if [ "$VENV_PYTHON_VERSION" != "$CURRENT_PYTHON_VERSION" ]; then
-        NEEDS_VENV=1
-    fi
+if ! command -v pipx &>/dev/null; then
+    fail "pipx not found." \
+        "pipx installs skillbench globally so you don't need to activate a venv." \
+        "" \
+        "Install:" \
+        "  macOS:         brew install pipx && pipx ensurepath" \
+        "  Debian/Ubuntu: sudo apt install pipx && pipx ensurepath" \
+        "  Any Python:    $PYTHON -m pip install --user pipx && $PYTHON -m pipx ensurepath" \
+        "" \
+        "Open a new terminal after running \`pipx ensurepath\`, then re-run this script."
 fi
 
-if [ "$NEEDS_VENV" = "1" ]; then
-    [ -d "$VENV_DIR" ] && rm -rf "$VENV_DIR"
-    echo "→  Creating virtual environment ($VENV_DIR)..."
-    "$PYTHON" -m venv "$VENV_DIR"
-else
-    echo "✓  Virtual environment already exists ($VENV_DIR)"
-fi
+ok "pipx found"
 
-VENV_PIP="$VENV_DIR/bin/pip"
-VENV_SKILLBENCH="$VENV_DIR/bin/skillbench"
+# ----------------------------------------------------------------------------
+# 3. Check git (needed by skillbench to read remotes)
+# ----------------------------------------------------------------------------
 
-# --- 3. Check git ---
 if command -v git &>/dev/null; then
-    echo "✓  git found"
+    ok "git found"
 else
-    echo "❌  git not found."
-    echo ""
-    echo "    Install it first:"
-    echo "      macOS:  brew install git"
-    echo "      Linux:  sudo apt install git"
-    echo ""
-    exit 1
+    fail "git not found." \
+        "Install:" \
+        "  macOS:         brew install git" \
+        "  Debian/Ubuntu: sudo apt install git"
 fi
 
-# --- 5. Install skillbench ---
-echo "→  Installing skillbench..."
-"$VENV_PIP" install --quiet -e .
-echo "✓  skillbench installed"
+# ----------------------------------------------------------------------------
+# 4. Install / upgrade skillbench via pipx
+# ----------------------------------------------------------------------------
 
-# --- 6. Install gh CLI if missing ---
-echo ""
-if command -v gh &>/dev/null; then
-    echo "✓  GitHub CLI already installed"
+step "Installing skillbench via pipx..."
+if pipx list --short 2>/dev/null | awk '{print $1}' | grep -qx skillbench; then
+    # Upgrade an already-installed pipx package in-place from this checkout.
+    pipx install --force --python "$PYTHON" "$REPO_ROOT" >/dev/null
 else
-    echo "→  GitHub CLI not found. Installing..."
-    OS=$(uname -s)
-    if [ "$OS" = "Darwin" ]; then
-        if command -v brew &>/dev/null; then
-            brew install gh
-        else
-            echo "⚠  Homebrew not found. Install gh manually: https://cli.github.com"
-        fi
-    elif [ "$OS" = "Linux" ]; then
-        if command -v apt &>/dev/null && command -v dpkg &>/dev/null; then
-            # Debian/Ubuntu
-            if [ "$(id -u)" = "0" ]; then SUDO=""; else SUDO="sudo"; fi
-            command -v curl &>/dev/null || { $SUDO apt update -qq && $SUDO apt install -y curl; }
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-                | $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-                | $SUDO tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            $SUDO apt update -qq && $SUDO apt install -y gh
-        else
-            echo "⚠  Auto-install not supported on this Linux distro."
-            echo "   Install gh manually: https://cli.github.com"
-        fi
-    else
-        echo "⚠  Unsupported OS. Install gh manually: https://cli.github.com"
+    pipx install --python "$PYTHON" "$REPO_ROOT" >/dev/null
+fi
+
+SKILLBENCH_BIN="$(command -v skillbench || true)"
+if [ -z "$SKILLBENCH_BIN" ]; then
+    # pipx installs to ~/.local/bin by default; that dir may not be on PATH
+    # in the CURRENT shell even after install. Resolve explicitly.
+    CANDIDATE="$HOME/.local/bin/skillbench"
+    if [ -x "$CANDIDATE" ]; then
+        SKILLBENCH_BIN="$CANDIDATE"
     fi
 fi
 
-# --- 7. gh auth ---
+if [ -z "$SKILLBENCH_BIN" ]; then
+    fail "Could not locate the installed \`skillbench\` binary." \
+        "Try: pipx ensurepath && open a new terminal."
+fi
+
+ok "skillbench installed: $SKILLBENCH_BIN"
+
+# ----------------------------------------------------------------------------
+# 5. Optional: gh CLI (used for repo classification)
+# ----------------------------------------------------------------------------
+
 if command -v gh &>/dev/null; then
     if gh auth status &>/dev/null; then
         GH_USER=$(gh api user --jq .login 2>/dev/null || echo "unknown")
-        echo "✓  GitHub CLI authenticated (${GH_USER})"
+        ok "GitHub CLI authenticated (${GH_USER})"
+    elif [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
+        ok "Using GH_TOKEN for GitHub classification (docs/gh-token.md)"
+    elif [ -t 1 ] && [ -z "${CI:-}" ]; then
+        # Interactive terminal + not CI → run the device-code flow.
+        # `gh auth login` opens its own prompts against /dev/tty so it still
+        # works when stdin is the curl pipe.
+        step "Authenticating GitHub CLI..."
+        gh auth login || true
     else
-        echo "→  Authenticating GitHub CLI..."
-        gh auth login
+        # Non-TTY (CI, piped stdout, nohup, &) → skip interactive auth so we
+        # don't block for the 15-min device-code timeout. skillbench will
+        # classify non-publicly as a safe default.
+        printf "\033[33m⚠  gh installed but not authenticated, and no terminal to run \`gh auth login\`.\033[0m\n"
+        printf "\033[33m   Run \`gh auth login\` manually, or set GH_TOKEN. See docs/gh-token.md.\033[0m\n"
     fi
+else
+    printf "\033[33m⚠  gh not found. Without it, all repos are classified as private (safe default).\033[0m\n"
+    printf "\033[33m   Install for richer repo classification:\033[0m\n"
+    printf "\033[33m     macOS:         brew install gh\033[0m\n"
+    printf "\033[33m     Debian/Ubuntu: sudo apt install gh\033[0m\n"
 fi
 
-# --- 8. Run skillbench collect ---
+# ----------------------------------------------------------------------------
+# 6. Run skillbench collect
+# ----------------------------------------------------------------------------
+
 echo ""
 echo "============================================================"
 echo "  Running skillbench collect..."
 echo "============================================================"
 echo ""
-"$VENV_SKILLBENCH" collect "$@"
+
+# Forward any args passed to collect.sh to skillbench collect.
+# Wrapped in if/else so `set -e` at the top of the script doesn't abort us
+# when collect exits non-zero (e.g. user cancels at the selection prompt
+# with exit 0, or headless EOF with exit 2). We still want the "Done"
+# footer below to run with the re-run guidance.
+if "$SKILLBENCH_BIN" collect "$@"; then
+    COLLECT_RC=0
+else
+    COLLECT_RC=$?
+fi
+
+# ----------------------------------------------------------------------------
+# 7. Re-run guidance (works even if ~/.local/bin is not on PATH yet)
+# ----------------------------------------------------------------------------
+
+echo ""
+echo "============================================================"
+echo "  Done."
+echo "============================================================"
+echo ""
+echo "  Installed command : $SKILLBENCH_BIN"
+echo "  Repo checkout     : $REPO_ROOT"
+echo ""
+echo "  To re-run later (exactly as just now):"
+# `printf '%q'` escapes each argument so the printed command round-trips
+# through shell parsing (preserves spaces, quotes, globs, etc.).
+RERUN_CMD="$(printf '%q ' "$SKILLBENCH_BIN" collect "$@")"
+echo "      ${RERUN_CMD% }"
+echo ""
+if ! command -v skillbench &>/dev/null; then
+    echo "  Hint: \`skillbench\` is not on PATH in this shell yet."
+    echo "        Run \`pipx ensurepath\` once and open a new terminal,"
+    echo "        after which \`skillbench collect\` will work globally."
+    echo ""
+fi
+
+exit "$COLLECT_RC"

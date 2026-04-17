@@ -204,8 +204,12 @@ def test_collect_prompt_displays_git_remote_org_for_selectable_workspaces(capsys
     with patch.dict(
         sys.modules,
         {
-            "session_parser": fake_session_parser,
-            "sanitizer": SimpleNamespace(Sanitizer=FakeSanitizer),
+            # cmd_collect does `from .session_parser import SessionScanner` inside
+            # the function body, which resolves to skillbench.session_parser after
+            # the package move. Patching that key lets the lazy import pick up
+            # our FakeScanner.
+            "skillbench.session_parser": fake_session_parser,
+            "skillbench.sanitizer": SimpleNamespace(Sanitizer=FakeSanitizer),
         },
     ), patch.object(skillbench, "git_remote_url", side_effect=fake_git_remote), patch.object(
         skillbench,
@@ -216,8 +220,11 @@ def test_collect_prompt_displays_git_remote_org_for_selectable_workspaces(capsys
         "classify_github_repo",
         side_effect=fake_gh,
     ), patch(
+        # First "y" confirms the Proceed? gate, then "n" cancels the actual
+        # selection prompt (we still expect the selectable row to have been
+        # printed between the two, which is what the assertions below check).
         "builtins.input",
-        side_effect=["n"],
+        side_effect=["y", "n"],
     ):
         args = Namespace(output=None, yes=False, include_excluded=False, allowed_orgs=[
             "andela-technology",
@@ -229,7 +236,9 @@ def test_collect_prompt_displays_git_remote_org_for_selectable_workspaces(capsys
 
     assert exc_info.value.code == 0
     output = capsys.readouterr().out
-    assert "GitHub org: andela-technology" in output
+    # selectable row shows the detected GitHub org inline
+    assert "org: andela-technology" in output
+    # blocked rows still surface the blocked workspace + reason
     assert "blocked-private" in output
     assert "outside allowed orgs (someone)" in output
 

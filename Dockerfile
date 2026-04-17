@@ -8,6 +8,10 @@ ENV GH_VERSION=${GH_VERSION}
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
     && git config --system safe.directory '*'
 
+# Pre-install Python runtime deps so the interactive picker works in the
+# container. Kept minimal — questionary is our only runtime dep for now.
+RUN pip install --no-cache-dir "questionary>=2.0"
+
 # Install GitHub CLI (gh) without apt.
 # This avoids Homebrew/Xcode and also avoids apt cache space issues in minimal Docker setups.
 RUN <<'PY' python3 -
@@ -55,9 +59,13 @@ PY
 # Default runtime layout.
 # We mount the repo at /work and set HOME to a mount-friendly location so
 # ~/.claude, ~/.gemini, ~/.codex can be mounted under /home/app/.
-ENV HOME=/home/app
+# PYTHONPATH=/work/src lets `python -m skillbench` find the package without
+# a pip install step (kept out of the image on purpose: code changes in the
+# mounted repo are picked up instantly, no rebuild needed).
+ENV HOME=/home/app \
+    PYTHONPATH=/work/src
 WORKDIR /work
 
 # Keep image lightweight; run code directly from bind-mounted repo.
-CMD ["python3", "skillbench.py", "--help"]
+CMD ["python3", "-m", "skillbench", "--help"]
 

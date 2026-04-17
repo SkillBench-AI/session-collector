@@ -610,6 +610,11 @@ def classify_workspace_entry(path: str, info: dict, allowed_orgs: list[str]) -> 
     remote = git_remote_url(path)
     gh = classify_github_repo(remote) if remote else None
     repo_scope = get_repo_scope_decision(remote, allowed_orgs)
+    # Independent "is this a GitHub URL?" probe — doesn't rely on repo_scope,
+    # which leaves remote_org=None for the wildcard (`["*"]`) allowlist even
+    # when the remote IS a GitHub URL. Used below to distinguish "gh API
+    # failed" from "not a GitHub repo".
+    github_slug = _extract_github_slug(remote) if remote else None
 
     if gh:
         public = gh["is_public"]
@@ -665,7 +670,15 @@ def classify_workspace_entry(path: str, info: dict, allowed_orgs: list[str]) -> 
         elif license_key == "other":
             reasons.append("unrecognized license in LICENSE file")
     else:
-        if remote and repo_scope["classification"] not in {"no_github_remote", "github_org_mismatch"}:
+        # `gh is None` means classify_github_repo returned None. That happens
+        # either because the URL wasn't a GitHub remote, or because the gh
+        # API call itself failed (binary missing, token invalid, or network
+        # error). Distinguish via `github_slug` (pure local URL parsing,
+        # independent of gh CLI *and* of repo_scope['remote_org'] — the
+        # latter is None for the wildcard scope even on real GitHub URLs).
+        if github_slug:
+            reasons.append("gh API call failed (check gh auth / GH_TOKEN)")
+        elif remote and repo_scope["classification"] not in {"no_github_remote", "github_org_mismatch"}:
             reasons.append("not a GitHub repo")
         if license_id:
             reasons.append(f"manifest license: {license_id}")
@@ -678,32 +691,77 @@ def classify_workspace_entry(path: str, info: dict, allowed_orgs: list[str]) -> 
     return entry
 
 
-def _gh_cli_available() -> bool:
-    """Check if the GitHub CLI is installed and authenticated."""
+def _gh_cli_available() -> tuple[bool, str]:
+    """Check if the GitHub CLI can actually make authenticated calls.
+
+    Returns ``(ok, reason)`` where ``reason`` is one of:
+      - ``"ok"`` — gh is usable
+      - ``"not_installed"`` — gh binary missing
+      - ``"not_authenticated"`` — gh installed but auth failed (no creds,
+        expired session, or invalid GH_TOKEN)
+      - ``"invalid_token"`` — GH_TOKEN / GITHUB_TOKEN env var is set but
+        gh auth status still fails (token likely revoked / malformed)
+
+    We always run ``gh auth status`` — even when GH_TOKEN is set — because
+    an invalid token needs to be surfaced to the user up front. Without this
+    check, classify_github_repo would silently fail on every call and
+    workspaces would be reported as "not a GitHub repo", which is a
+    misleading diagnosis for a real classification problem.
+    """
     try:
         result = subprocess.run(
             ["gh", "auth", "status"],
             capture_output=True, text=True, timeout=5,
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            return (True, "ok")
+        # Auth failed. If the user explicitly provided a token, the token
+        # is the likely culprit; otherwise it's a plain "not logged in".
+        if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+            return (False, "invalid_token")
+        return (False, "not_authenticated")
     except FileNotFoundError:
-        return False
+        return (False, "not_installed")
     except Exception:
-        return False
+        return (False, "not_installed")
 
 
 _GH_AVAILABLE: bool | None = None
 
 
 def _check_gh_once() -> bool:
-    """Check gh availability once and cache the result."""
+    """Check gh availability once and cache the result.
+
+    Prints a short, bordered warning the first time the check fails so users
+    understand *why* every repo ends up classified as private.
+    """
     global _GH_AVAILABLE
     if _GH_AVAILABLE is None:
-        _GH_AVAILABLE = _gh_cli_available()
-        if not _GH_AVAILABLE:
-            print("  Note: GitHub CLI (gh) not found or not authenticated.")
-            print("  Install: brew install gh && gh auth login")
-            print("  Without gh, all repos are classified as private (safe default).\n")
+        ok, reason = _gh_cli_available()
+        _GH_AVAILABLE = ok
+        if not ok:
+            y, r = "\033[33m", "\033[0m"
+            bar = "─" * 60
+            print()
+            print(f"{y}{bar}{r}")
+            if reason == "not_installed":
+                print(f"{y}⚠  gh not installed → every repo will be treated as private.{r}")
+                print(f"{y}   Fix:  brew/apt install gh && gh auth login{r}")
+                print(f"{y}   Or:   GH_TOKEN=<pat>    (docs/gh-token.md){r}")
+            elif reason == "invalid_token":
+                # Most likely a placeholder / revoked / expired token.
+                print(f"{y}⚠  GH_TOKEN set but gh auth status failed.{r}")
+                print(f"{y}   The token may be invalid, revoked, or missing SSO.{r}")
+                print(f"{y}   Create a fresh one and re-run:{r}")
+                print(f"{y}     gh auth token                    (if logged in locally){r}")
+                print(f"{y}     https://github.com/settings/tokens (PAT → Classic, 'repo' scope){r}")
+                print(f"{y}   See docs/gh-token.md for scopes and SSO authorization.{r}")
+            else:  # "not_authenticated"
+                print(f"{y}⚠  gh not authenticated → every repo will be treated as private.{r}")
+                print(f"{y}   Fix:  gh auth login{r}")
+                print(f"{y}   Or:   GH_TOKEN=<pat>    (docs/gh-token.md){r}")
+            print(f"{y}{bar}{r}")
+            print()
     return _GH_AVAILABLE
 
 
@@ -1711,14 +1769,188 @@ def _tty_input(prompt: str) -> str:
         return input(prompt)
 
 
+def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
+    """Show an interactive picker for private/unlicensed workspaces.
+
+    Uses ``questionary`` (arrow keys / spacebar / enter) when available, and
+    falls back to an inline numbered prompt otherwise. Returns the list of
+    selected workspace paths, or calls ``sys.exit`` on cancel / bad input.
+
+    Design note: neither path clears the screen. The earlier ``[1/5] …`` /
+    ``[2/5] …`` pipeline output is exactly what users (and support) need
+    when something went wrong (e.g. "why did Auto-included land on 0?").
+    ``questionary`` rewrites its own lines in place as you toggle, so the
+    picker still feels self-contained without nuking scroll-back; the
+    fallback is a plain inline prompt for the same reason.
+    """
+    # Visual emphasis via yellow box + blank lines — matching the style of
+    # _check_gh_once. We intentionally do NOT clear the screen here: some
+    # terminals (or "paste scrollback" workflows) drop the cleared lines
+    # from view entirely, making the earlier [1/5]/[2/5] pipeline output
+    # feel lost even though scroll-back technically retains it. Keeping the
+    # output inline preserves a coherent, copy-pastable session log.
+    y, r = "\033[33m", "\033[0m"
+    bar = "─" * 60
+
+    # If gh was available and returned real data, classification is
+    # trustworthy and we don't need an extra "Proceed?" confirmation before
+    # the picker — users can still cancel inside the picker with Ctrl-C.
+    # If gh was NOT available, every repo was force-classified as "private,
+    # no license", so the selectable list is based on org-scope alone and
+    # the user should explicitly confirm before acting on that subset.
+    gh_ok = _check_gh_once()
+
+    print()
+    print()
+    print(f"{y}{bar}{r}")
+    print(f"{y}  No auto-includable (public + OSS) workspaces in scope.{r}")
+    print(f"{y}  {len(selectable)} private workspace(s) eligible for manual selection.{r}")
+    print(f"{y}{r}")
+    print(f"{y}  Scope: {scope_label}{r}")
+    print(f"{y}  Sessions are PII-scrubbed; source code is never collected.{r}")
+    print(f"{y}  Details: docs/privacy.md{r}")
+    if not gh_ok:
+        print(f"{y}{r}")
+        print(f"{y}  NOTE: gh is unavailable — visibility / license data is not{r}")
+        print(f"{y}        verified. Proceed only if you trust the org-scope filter.{r}")
+    print(f"{y}{bar}{r}")
+    print()
+
+    if not gh_ok:
+        # Require explicit confirmation because classification is suspect.
+        try:
+            confirm = _tty_input("Proceed anyway? [y/N] ").strip().lower()
+        except KeyboardInterrupt:
+            print("\nAborted by user.", file=sys.stderr)
+            sys.exit(130)
+        except EOFError:
+            print(
+                "\nNo interactive input available (headless run?). Re-run with --yes "
+                "or under a TTY.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # Default (empty) is "no" in this defensive path.
+        if confirm not in ("y", "yes"):
+            print("Aborted.")
+            sys.exit(0)
+
+    # ---- Rich path: questionary checkbox UI ----
+    # Set SKILLBENCH_DEBUG=1 to print the exact reason we fall back to the
+    # numbered list — useful when users expect the TUI but get the legacy UI.
+    debug = bool(os.environ.get("SKILLBENCH_DEBUG"))
+
+    def _fallback_reason(msg: str) -> None:
+        if debug:
+            print(f"[skillbench] questionary disabled: {msg}", file=sys.stderr)
+
+    try:
+        import questionary  # type: ignore
+    except ImportError as e:
+        questionary = None  # type: ignore
+        _fallback_reason(f"ImportError ({e})")
+
+    if questionary is not None:
+        stdin_tty = sys.stdin.isatty()
+        stdout_tty = sys.stdout.isatty()
+        if not (stdin_tty and stdout_tty):
+            _fallback_reason(
+                f"no TTY (stdin.isatty={stdin_tty}, stdout.isatty={stdout_tty})"
+            )
+        else:
+            try:
+                # questionary renders inline (rewriting the same lines as you
+                # toggle), which preserves scroll-back of earlier pipeline
+                # output — no screen clear is needed or wanted here.
+                choices = [
+                    questionary.Choice(
+                        title=(
+                            f"{e['path']}  — {e.get('conversations', '?')} sessions, "
+                            f"org: {e['remote_org'] or 'not detected'}"
+                        ),
+                        value=e["path"],
+                    )
+                    for e in selectable
+                ]
+                # Instruction explicitly mentions Ctrl-C so users know how to
+                # cancel — questionary doesn't expose ESC as a built-in cancel
+                # key, and adding one via prompt_toolkit's private API was
+                # brittle across versions. Ctrl-C is the terminal-wide
+                # standard and works reliably.
+                selected = questionary.checkbox(
+                    "Select private workspaces to include",
+                    choices=choices,
+                    instruction=(
+                        "  (space: toggle · a: toggle all · enter: confirm · Ctrl-C: cancel)"
+                    ),
+                ).ask()
+                if selected is None:  # user hit Ctrl-C
+                    print("Aborted.")
+                    sys.exit(0)
+                if not selected:
+                    print("No workspaces selected. Aborted.")
+                    sys.exit(0)
+                print(f"Including {len(selected)} workspace(s).")
+                return list(selected)
+            except Exception as e:  # e.g. prompt_toolkit TTY quirks
+                _fallback_reason(f"{type(e).__name__}: {e}")
+
+    # ---- Fallback: inline numbered list + comma input ----
+    # No screen clear here either: scroll-back of the [1/5]/[2/5] logs is how
+    # users (and support) figure out why auto-include landed on 0.
+    # (Header was printed earlier, before the Proceed? confirmation.)
+    print("Select private workspaces to include:")
+    for i, e in enumerate(selectable):
+        convs = e.get("conversations", "?")
+        org = e["remote_org"] or "not detected"
+        print(f"  [{i+1}] {e['path']}  — {convs} sessions, org: {org}")
+    print("  [a] all    [n] cancel")
+    try:
+        response = _tty_input("> ").strip().lower()
+    except KeyboardInterrupt:
+        print("\nAborted by user.", file=sys.stderr)
+        sys.exit(130)  # standard SIGINT exit code
+    except EOFError:
+        # No TTY / stdin closed — headless run without --yes. Must be non-zero
+        # so CI/cron jobs don't silently report success with no export artifacts.
+        print(
+            "\nNo interactive input available (headless run?). Re-run with --yes "
+            "or under a TTY.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if response in ("n", "no", ""):
+        print("Aborted.")
+        sys.exit(0)
+    if response == "a":
+        paths = [e["path"] for e in selectable]
+        print(f"Including all {len(paths)} workspaces.")
+        return paths
+    try:
+        indices = [int(x.strip()) - 1 for x in response.split(",")]
+    except ValueError:
+        print("Invalid input. Aborted.")
+        sys.exit(0)
+    paths = [
+        selectable[i]["path"]
+        for i in indices
+        if 0 <= i < len(selectable)
+    ]
+    if not paths:
+        print("No valid selections. Aborted.")
+        sys.exit(0)
+    print(f"Including {len(paths)} workspace(s).")
+    return paths
+
+
 def cmd_collect(args):
     """One-command pipeline: scan → classify → analyze → export → sanitize.
 
     Replaces the manual 4-step workflow with a single interactive command.
     No CASS dependency — reads sessions directly from local agent log files.
     """
-    from session_parser import SessionScanner
-    from sanitizer import Sanitizer
+    from .session_parser import SessionScanner
+    from .sanitizer import Sanitizer
 
     allowed_orgs = normalize_allowed_orgs(
         getattr(args, "allowed_orgs", PILOT_ALLOWED_GITHUB_ORGS),
@@ -1772,34 +2004,28 @@ def cmd_collect(args):
     selectable_excluded = [e for e in excluded if e["selection_allowed"]]
     blocked_excluded = [e for e in excluded if not e["selection_allowed"]]
 
-    # Show classification
-    print(f"\n  Auto-included (approved org + public + OSS license): {len(included)}")
+    # Classification summary (compact)
+    print(
+        f"\n  Auto-included: {len(included)}  |  "
+        f"Selectable (approved org, not public/OSS): {len(selectable_excluded)}  |  "
+        f"Blocked: {len(blocked_excluded)}  |  Skipped: {skipped_count}"
+    )
     for e in included:
-        agents = ", ".join(e["agents"])
-        print(f"    {e['path']}")
-        print(f"      {e['conversations']} sessions, {e['reason']}, {agents}")
+        print(f"    ✓ {e['path']}  — {e['conversations']} sessions, {e['reason']}")
 
-    print(f"  Eligible for manual selection (approved org, not public/OSS): {len(selectable_excluded)}")
-    if len(selectable_excluded) <= 10:
-        for e in selectable_excluded:
-            print(f"    {e['path']}  ({e['reason']})")
-    else:
-        for e in selectable_excluded[:5]:
-            print(f"    {e['path']}  ({e['reason']})")
-        print(f"    ... and {len(selectable_excluded) - 5} more")
+    def _print_bucket(label: str, items: list[dict], with_org: bool) -> None:
+        if not items:
+            return
+        print(f"  {label}:")
+        visible = items[:5]
+        for e in visible:
+            suffix = f"; org: {e['remote_org'] or 'not detected'}" if with_org else ""
+            print(f"    {e['path']}  ({e['reason']}{suffix})")
+        if len(items) > len(visible):
+            print(f"    … and {len(items) - len(visible)} more")
 
-    print(f"  Blocked by repo scope: {len(blocked_excluded)}")
-    if len(blocked_excluded) <= 10:
-        for e in blocked_excluded:
-            org = e["remote_org"] or "not detected"
-            print(f"    {e['path']}  ({e['reason']}; GitHub org: {org})")
-    else:
-        for e in blocked_excluded[:5]:
-            org = e["remote_org"] or "not detected"
-            print(f"    {e['path']}  ({e['reason']}; GitHub org: {org})")
-        print(f"    ... and {len(blocked_excluded) - 5} more")
-
-    print(f"  Skipped (temp/transient): {skipped_count}")
+    _print_bucket("Selectable", selectable_excluded, with_org=False)
+    _print_bucket("Blocked", blocked_excluded, with_org=True)
 
     include_excluded = getattr(args, "include_excluded", False)
     allowed_paths = [e["path"] for e in included]
@@ -1810,67 +2036,42 @@ def cmd_collect(args):
         allowed_paths = [e["path"] for e in (included + selectable_excluded)]
 
     if not allowed_paths:
-        print("\nNo approved public/OSS workspaces found to include.")
         if selectable_excluded and not getattr(args, "yes", False):
-            print("\nYou have private/unlicensed workspaces with session data.")
-            print(
-                f"Only repos in allowed GitHub orgs can be selected: {format_allowed_orgs(allowed_orgs)}."
+            # _select_workspaces prints its own framed "proceed?" block
+            # including the "no auto-includable..." headline.
+            allowed_paths = _select_workspaces(
+                selectable_excluded,
+                scope_label=format_allowed_orgs(allowed_orgs),
             )
-            print("Data from these workspaces will be PII-scrubbed before export.")
-            print("Only sessions (your prompts + AI responses) are collected — not source code.\n")
-            print("Select workspaces to include:\n")
-            for i, e in enumerate(selectable_excluded):
-                agents = ", ".join(e["agents"]) if "agents" in e else "unknown"
-                convs = e.get("conversations", "?")
-                org = e["remote_org"] or "not detected"
-                print(f"  [{i+1}] {e['path']}")
-                print(f"      {convs} sessions, {agents} ({e['reason']})")
-                print(f"      GitHub org: {org}")
-            print(f"\n  [a] Include all")
-            print(f"  [n] Skip — exit without exporting\n")
-            try:
-                response = _tty_input("Enter numbers separated by commas, 'a' for all, or 'n' to skip: ").strip().lower()
-                if response in ("n", "no", ""):
-                    print("Aborted.")
-                    sys.exit(0)
-                elif response == "a":
-                    allowed_paths = [e["path"] for e in selectable_excluded]
-                    print(f"\n  Including all {len(allowed_paths)} workspaces.")
-                else:
-                    indices = [int(x.strip()) - 1 for x in response.split(",")]
-                    allowed_paths = [
-                        selectable_excluded[i]["path"]
-                        for i in indices
-                        if 0 <= i < len(selectable_excluded)
-                    ]
-                    if not allowed_paths:
-                        print("No valid selections. Aborted.")
-                        sys.exit(0)
-                    print(f"\n  Including {len(allowed_paths)} workspace(s).")
-            except (KeyboardInterrupt, EOFError):
-                print("\nAborted.")
-                sys.exit(0)
-            except (ValueError, IndexError):
-                print("Invalid input. Aborted.")
-                sys.exit(0)
         else:
-            print("No workspaces available to collect from under the allowed GitHub org scope.")
-            print("Or rerun: skillbench collect --include-excluded")
+            print("\nNo auto-includable (public + OSS) workspaces in scope.")
+            print("Nothing to collect in the allowed GitHub org scope.")
+            print("Hint: re-run with --include-excluded, or see docs/details.md.")
             sys.exit(1)
 
     # Interactive confirmation
     if not getattr(args, "yes", False):
         print()
         try:
-            response = _tty_input("Continue with these workspaces? [Y/n] ")
+            response = _tty_input("Continue? [Y/n] ")
             if response.strip().lower() in ("n", "no"):
-                print("Aborted. Use `skillbench scan` to manually edit the workspace list.")
+                print("Aborted. Edit dist/bootblock.txt or re-run with different --allowed-orgs.")
                 sys.exit(0)
-        except (KeyboardInterrupt, EOFError):
-            print("\nAborted.")
-            sys.exit(0)
+        except KeyboardInterrupt:
+            print("\nAborted by user.", file=sys.stderr)
+            sys.exit(130)
+        except EOFError:
+            print(
+                "\nNo interactive input available (headless run?). Re-run with --yes "
+                "or under a TTY.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
-    # Write bootblock.txt for compatibility with scan/analyze/gather
+    # Write bootblock.txt for compatibility with scan/analyze/gather.
+    # Persist manually-selected (or --include-excluded) workspaces as
+    # uncommented entries so the next run reflects the user's choice.
+    selected_paths = {p for p in allowed_paths}
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     with open(BOOTBLOCK_FILE, "w") as f:
         f.write("# SkillBench Boot Block — auto-generated by `skillbench collect`\n")
@@ -1879,8 +2080,17 @@ def cmd_collect(args):
         for e in included:
             agents = ",".join(e["agents"])
             f.write(f"{e['path']}  # {e['reason']}, {agents}, {e['conversations']} sessions\n")
+        for e in excluded:
+            if e["path"] in selected_paths:
+                agents = ",".join(e["agents"])
+                f.write(
+                    f"{e['path']}  # {e['reason']}, {agents}, "
+                    f"{e['conversations']} sessions (manually selected)\n"
+                )
         f.write("\n# EXCLUDED (uncomment to include):\n")
         for e in excluded:
+            if e["path"] in selected_paths:
+                continue
             f.write(f"# {e['path']}  # {e['reason']}\n")
 
     # --- Step 3: Analyze ---
@@ -1935,10 +2145,15 @@ def cmd_collect(args):
         print("  Growth edges: " + " · ".join(edges))
     print()
 
-    # Write JSON report (without _raw key)
+    # Build report in memory (used by the dashboard generator below).
+    # We only persist it to disk when the user explicitly asks via
+    # --write-report, because downstream uploaders (e.g. the Andela portal)
+    # don't expect this file and have surfaced it as an "unknown file" error.
     report = {k: v for k, v in metrics.items() if k != "_raw"}
-    report_path = DIST_DIR / "skillbench_report.json"
-    report_path.write_text(json.dumps(report, indent=2))
+    report_path = None
+    if getattr(args, "write_report", False):
+        report_path = DIST_DIR / "skillbench_report.json"
+        report_path.write_text(json.dumps(report, indent=2))
 
     # --- Step 4: Export ---
     print(f"[4/5] Exporting {len(conversations)} sessions...")
@@ -2035,7 +2250,8 @@ def cmd_collect(args):
     print(f"  Collection complete!")
     print(f"  {len(sanitized)} sessions, {total_msgs} messages, {len(workspace_set)} workspace(s)")
     print(f"  Total size: {size_mb:.1f} MB")
-    print(f"  Report:    {report_path}")
+    if report_path is not None:
+        print(f"  Report:    {report_path}")
     if split == "none" or args.output:
         print(f"  Export:    {output_path}")
     else:
@@ -2931,6 +3147,11 @@ def main():
     # upload guide
     collect_p.add_argument("--upload-guide", action="store_true",
                        help="Show upload instructions at the end")
+    # Local-only: emit dist/skillbench_report.json for debugging / dashboards.
+    # Not generated by default because it is not a shareable artifact and has
+    # confused upload UIs that expect only skillbench_export_sanitized_*.json.
+    collect_p.add_argument("--write-report", action="store_true",
+                           help="Also write dist/skillbench_report.json (local-only, not for upload)")
     collect_p.add_argument(
         "--allowed-orgs",
         nargs="+",
