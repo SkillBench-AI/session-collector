@@ -15,3 +15,6 @@ __pycache__/
 .venv/
 .env
 .env.local
+
+# Pilot-specific docs (customer-facing content hosted out-of-repo).
+docs/pilots/

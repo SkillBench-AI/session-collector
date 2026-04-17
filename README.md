@@ -6,82 +6,69 @@ Collect and analyze your AI coding sessions locally. No data leaves your machine
 
 Install once, on the host:
 
-- **Docker** — for the recommended Docker workflow (macOS/Linux/Windows via Docker Desktop).
+- **Docker** — for the recommended Docker workflow (macOS / Linux / Windows via Docker Desktop).
 - **GitHub authentication** — either install the GitHub CLI **or** use a Personal Access Token:
   - `gh` CLI: `brew install gh && gh auth login` (macOS) / `sudo apt install gh && gh auth login` / [cli.github.com](https://cli.github.com/)
-  - Or set `GH_TOKEN=<personal access token>` before running (see [docs/gh-token.md](docs/gh-token.md) for token scopes + safe usage)
+  - Or set `GH_TOKEN=<personal access token>` before running — see [docs/gh-token.md](docs/gh-token.md) for scopes and safe handling.
 - **git** — needed to read remotes from your project folders.
 - *(Python workflows only)* **Python 3.9+** and **[pipx](https://pipx.pypa.io/)**:
   - macOS: `brew install pipx && pipx ensurepath`
-  - Debian/Ubuntu: `sudo apt install pipx && pipx ensurepath`
+  - Debian / Ubuntu: `sudo apt install pipx && pipx ensurepath`
   - Any Python: `python3 -m pip install --user pipx && python3 -m pipx ensurepath`
 
-> If you want to skip the GitHub check entirely and rely only on manual
-> private-repo selection, run `ALLOW_NO_GH=1 make docker-collect`.
+> Want to skip the GitHub check entirely and rely only on manual private-repo
+> selection? Run `ALLOW_NO_GH=1 make docker-collect`.
 
-## Quick start — Andela pilot
-
-### Docker (recommended)
+## Option A — Docker (recommended)
 
 ```bash
 git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
 cd session-collector
-make docker-collect ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
+make docker-collect      # public + OSS repos only (safe default)
+make docker-collect-all  # also include private / unlicensed workspaces (opt-in)
+```
+
+Restrict collection to specific GitHub orgs (e.g. your company + personal account):
+
+```bash
+make docker-collect ALLOWED_ORGS="your-company your-github-username"
 ```
 
 Prefer a token to installing `gh`? Prefix the same command with `GH_TOKEN=…`
 (leading space keeps it out of shell history):
 
 ```bash
- GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx make docker-collect ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
+ GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx make docker-collect
 ```
 
 See [docs/gh-token.md](docs/gh-token.md) for token scopes and safe handling.
 
-### One-liner install (macOS/Linux)
+## Option B — One-liner install (macOS / Linux)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/scripts/andela-collect.sh | bash
-```
-
-Re-runs later: `skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews`.
-
-## Quick start — general use
-
-### Docker (recommended)
-
-```bash
-git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
-cd session-collector
-make docker-collect      # public + OSS repos only (safe default)
-make docker-collect-all  # also include private/unlicensed workspaces (opt-in)
-```
-
-Without installing `gh`, prefix with a Personal Access Token (leading space
-keeps it out of shell history; see [docs/gh-token.md](docs/gh-token.md)):
-
-```bash
- GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx make docker-collect
-```
-
-### One-liner install (macOS/Linux)
+Installs the CLI via `pipx` and runs the collect in one step:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/scripts/collect.sh | bash
 ```
 
-Re-runs later: `skillbench collect`.
+Re-runs later (no installer needed):
 
-### Manual pipx install
+```bash
+skillbench collect                                             # all orgs
+skillbench collect --allowed-orgs your-company your-username   # restrict scope
+```
+
+## Option C — Manual pipx install
 
 ```bash
 git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
 cd session-collector
 pipx install .
-skillbench collect
+skillbench collect                                             # all orgs
+skillbench collect --allowed-orgs your-company your-username   # restrict scope
 ```
 
-## Output
+## Output & upload
 
 Sanitized weekly exports land in `dist/` on your host
 (e.g. `dist/skillbench_export_sanitized_2026_W16.json`). Drag-and-drop those

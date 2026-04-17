@@ -686,20 +686,10 @@ def _gh_cli_available() -> tuple[bool, str]:
       - ``"not_installed"`` — gh binary missing
       - ``"not_authenticated"`` — gh installed but no auth
     """
-    # GH_TOKEN / GITHUB_TOKEN take precedence over `gh auth login` (gh reads
-    # them automatically), so when one is set we skip the much slower
-    # `gh auth status` HTTP probe and just confirm the binary is reachable.
-    #
-    # Note: this *intentionally diverges* from the Makefile's preflight-gh,
-    # which short-circuits on token alone without a binary check. The Makefile
-    # preflight runs on the host for the Docker flow, where the `gh` binary
-    # lives inside the container image — the host doesn't need it. This
-    # function, by contrast, runs wherever skillbench is executing (container
-    # OR host for pipx installs), and classify_github_repo downstream calls
-    # `gh repo view` directly, so we really do need the binary here. Without
-    # this check, a pipx user with GH_TOKEN but no gh binary would silently
-    # get "Auto-included: 0" with no warning — exactly the failure mode we
-    # surfaced as a banner.
+    # With a token set, gh uses it automatically — skip the slow `gh auth
+    # status` probe and just confirm the binary exists. We check the binary
+    # (unlike the Makefile's host-side preflight) because this runs wherever
+    # skillbench executes and `classify_github_repo` calls `gh` directly.
     if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
         try:
             subprocess.run(
