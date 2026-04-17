@@ -220,8 +220,11 @@ def test_collect_prompt_displays_git_remote_org_for_selectable_workspaces(capsys
         "classify_github_repo",
         side_effect=fake_gh,
     ), patch(
+        # First "y" confirms the Proceed? gate, then "n" cancels the actual
+        # selection prompt (we still expect the selectable row to have been
+        # printed between the two, which is what the assertions below check).
         "builtins.input",
-        side_effect=["n"],
+        side_effect=["y", "n"],
     ):
         args = Namespace(output=None, yes=False, include_excluded=False, allowed_orgs=[
             "andela-technology",

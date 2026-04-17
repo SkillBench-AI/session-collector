@@ -20,21 +20,13 @@ CONTAINER_HOME ?= /home/app
 # Set INCLUDE_EXCLUDED=1 to opt-in to exporting excluded workspaces too.
 INCLUDE_EXCLUDED ?= 0
 # YES=1 forces non-interactive mode (passes -y, skips all prompts).
-# YES=0 (default) lets recipe-time TTY detection decide: interactive shell →
-# leave -y off so users can answer prompts; no TTY (CI / cron / piped stdin) →
-# auto-inject -y so headless runs don't silently no-op at a prompt.
+# YES=0 (default) lets the helper script's TTY detection decide at run time:
+# interactive shell → leave -y off so users can answer prompts; no TTY (CI /
+# cron / piped stdin) → auto-inject -y so headless runs don't silently no-op
+# at a prompt.
 YES ?= 0
-# `-y` added at recipe time based on YES or TTY presence. The $$( ... ) runs
-# inside the recipe shell, not at Makefile parse time, so its $(tty check)
-# reflects the real stdin state.
-YES_FLAG = $$( if [ "$(YES)" = "1" ] || ! [ -t 0 ]; then printf -- "-y"; fi )
-COLLECT_FLAGS :=
-ifeq ($(INCLUDE_EXCLUDED),1)
-COLLECT_FLAGS += --include-excluded
-endif
-ifdef ALLOWED_ORGS
-COLLECT_FLAGS += --allowed-orgs $(foreach org,$(ALLOWED_ORGS),"$(org)")
-endif
+# ALLOWED_ORGS may be unset; helper script forwards it only when non-empty.
+ALLOWED_ORGS ?=
 
 # Fixed mounts for agent session stores (read-only)
 AGENT_MOUNTS := \
@@ -71,7 +63,8 @@ preflight-host:
 		printf '\033[31m%s\033[0m\n' "   Python3: brew install python  (macOS)  /  sudo apt install python3  (Debian/Ubuntu)"; \
 		printf '\033[31m%s\033[0m\n' "$$BAR"; \
 		exit 1; \
-	fi
+	fi; \
+	printf '\033[32m✓  host tools OK (docker, python3)\033[0m\n'
 
 # Preflight: require GitHub CLI auth on the host before starting Docker.
 #
@@ -85,9 +78,9 @@ preflight-host:
 # bypass with ALLOW_NO_GH=1.
 preflight-gh:
 	@if [ -n "$$GH_TOKEN" ] || [ -n "$$GITHUB_TOKEN" ]; then \
-		echo "✓  Using GH_TOKEN for GitHub classification (docs/gh-token.md)"; \
+		printf '\033[32m✓  Using GH_TOKEN for GitHub classification (docs/gh-token.md)\033[0m\n'; \
 	elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then \
-		echo "✓  gh authenticated as $$(gh api user --jq .login 2>/dev/null || echo unknown)"; \
+		printf '\033[32m✓  gh authenticated as %s\033[0m\n' "$$(gh api user --jq .login 2>/dev/null || echo unknown)"; \
 	elif [ "$${ALLOW_NO_GH:-0}" = "1" ]; then \
 		printf '\033[33m%s\033[0m\n' "⚠  ALLOW_NO_GH=1 — continuing without gh. Auto-include will be 0."; \
 	else \
@@ -111,19 +104,18 @@ docker-build:
 
 docker-collect: preflight-host preflight-gh docker-build
 	@mkdir -p dist
-	docker run --rm $(DOCKER_INTERACTIVE) \
-		--user "$$(id -u):$$(id -g)" \
-		-e HOME="$(CONTAINER_HOME)" \
-		-e PYTHONUNBUFFERED=1 \
-		$${GH_TOKEN:+-e GH_TOKEN} \
-		$${GITHUB_TOKEN:+-e GITHUB_TOKEN} \
-		$${SKILLBENCH_DEBUG:+-e SKILLBENCH_DEBUG} \
-		-v "$$(pwd):/work" -w /work \
-		$(AGENT_MOUNTS) \
-		$(GH_MOUNTS) \
-		$(WORKSPACE_MOUNTS) \
-		"$(IMAGE)" \
-		python3 -m skillbench collect $(YES_FLAG) $(COLLECT_FLAGS)
+	@# Delegated to scripts/_docker_run.sh so token-injection + docker run
+	@# happen in ONE shell invocation. Settings are passed via env vars so
+	@# quoting survives cleanly (especially ALLOWED_ORGS with spaces).
+	@IMAGE="$(IMAGE)" \
+	    CONTAINER_HOME="$(CONTAINER_HOME)" \
+	    YES="$(YES)" \
+	    INCLUDE_EXCLUDED="$(INCLUDE_EXCLUDED)" \
+	    ALLOWED_ORGS="$(ALLOWED_ORGS)" \
+	    AGENT_MOUNTS="$(AGENT_MOUNTS)" \
+	    GH_MOUNTS="$(GH_MOUNTS)" \
+	    WORKSPACE_MOUNTS="$(WORKSPACE_MOUNTS)" \
+	    scripts/_docker_run.sh
 
 docker-collect-all:
 	$(MAKE) docker-collect INCLUDE_EXCLUDED=1

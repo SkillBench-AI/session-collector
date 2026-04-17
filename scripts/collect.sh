@@ -17,6 +17,27 @@ REPO_URL="https://github.com/SkillBench-AI/session-collector.git"
 REPO_DIR="session-collector"
 MIN_PYTHON_MINOR=9
 
+# --- Formatting helpers (match Makefile preflight style) -----------------
+C_RED=$'\033[31m'
+C_GREEN=$'\033[32m'
+C_RESET=$'\033[0m'
+BAR="────────────────────────────────────────────────────────────"
+
+ok()   { printf "%s✓  %s%s\n" "$C_GREEN" "$1" "$C_RESET"; }
+step() { printf "→  %s\n" "$1"; }
+
+# fail "headline" "hint line 1" "hint line 2" ...  → red boxed block, exit 1
+fail() {
+    local headline="$1"; shift
+    printf "%s%s%s\n" "$C_RED" "$BAR" "$C_RESET" >&2
+    printf "%s✗  %s%s\n" "$C_RED" "$headline" "$C_RESET" >&2
+    for line in "$@"; do
+        printf "%s   %s%s\n" "$C_RED" "$line" "$C_RESET" >&2
+    done
+    printf "%s%s%s\n" "$C_RED" "$BAR" "$C_RESET" >&2
+    exit 1
+}
+
 echo "============================================================"
 echo "  SkillBench session-collector"
 echo "============================================================"
@@ -27,29 +48,32 @@ echo ""
 # ----------------------------------------------------------------------------
 
 is_session_collector_repo() {
-    [ -f "pyproject.toml" ] && [ -f "skillbench.py" ]
+    # Check for the migrated src-layout entry point. Earlier versions kept
+    # skillbench.py at the repo root; after the packaging refactor it moved to
+    # src/skillbench/__init__.py. We only check the new location — the old
+    # one no longer exists on current main.
+    [ -f "pyproject.toml" ] && [ -f "src/skillbench/__init__.py" ]
 }
 
 if ! is_session_collector_repo; then
     if ! command -v git &>/dev/null; then
-        echo "❌  git not found. Install it first:"
-        echo "      macOS:  brew install git"
-        echo "      Linux:  sudo apt install git"
-        exit 1
+        fail "git not found." \
+            "Install:" \
+            "  macOS:         brew install git" \
+            "  Debian/Ubuntu: sudo apt install git"
     fi
     if [ -d "$REPO_DIR/.git" ]; then
-        echo "→  Repository already cloned. Updating..."
+        step "Repository already cloned. Updating..."
         git -C "$REPO_DIR" pull --ff-only || true
     elif [ -d "$REPO_DIR" ]; then
-        echo "❌  '$REPO_DIR' exists but is not a git repository."
-        echo "   Remove it or choose a different working directory."
-        exit 1
+        fail "'$REPO_DIR' exists but is not a git repository." \
+            "Remove it or choose a different working directory."
     else
-        echo "→  Cloning SkillBench session-collector..."
+        step "Cloning SkillBench session-collector..."
         git clone --depth 1 "$REPO_URL" "$REPO_DIR"
     fi
     cd "$REPO_DIR"
-    echo "✓  Repository ready: $(pwd)"
+    ok "Repository ready: $(pwd)"
     echo ""
 fi
 
@@ -72,17 +96,14 @@ for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 p
 done
 
 if [ -z "$PYTHON" ]; then
-    echo "❌  Python 3.9+ not found."
-    echo ""
-    echo "    Install it first:"
-    echo "      macOS:  brew install python@3.13"
-    echo "      Linux:  sudo apt install python3.9"
-    echo ""
-    exit 1
+    fail "Python 3.9+ not found." \
+        "Install:" \
+        "  macOS:         brew install python" \
+        "  Debian/Ubuntu: sudo apt install python3"
 fi
 
 PYTHON_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
-echo "✓  Python $PYTHON_VERSION found ($PYTHON)"
+ok "Python $PYTHON_VERSION found ($PYTHON)"
 
 # ----------------------------------------------------------------------------
 # 2. Require pipx so `skillbench` ends up on PATH without venv activate.
@@ -93,39 +114,37 @@ echo "✓  Python $PYTHON_VERSION found ($PYTHON)"
 # ----------------------------------------------------------------------------
 
 if ! command -v pipx &>/dev/null; then
-    echo "❌  pipx not found."
-    echo ""
-    echo "    pipx installs skillbench globally so you don't need to activate a venv."
-    echo ""
-    echo "    Install pipx:"
-    echo "      macOS:       brew install pipx && pipx ensurepath"
-    echo "      Debian/Ubuntu: sudo apt install pipx && pipx ensurepath"
-    echo "      Any Python:  $PYTHON -m pip install --user pipx && $PYTHON -m pipx ensurepath"
-    echo ""
-    echo "    Open a new terminal after running \`pipx ensurepath\`, then re-run this script."
-    exit 1
+    fail "pipx not found." \
+        "pipx installs skillbench globally so you don't need to activate a venv." \
+        "" \
+        "Install:" \
+        "  macOS:         brew install pipx && pipx ensurepath" \
+        "  Debian/Ubuntu: sudo apt install pipx && pipx ensurepath" \
+        "  Any Python:    $PYTHON -m pip install --user pipx && $PYTHON -m pipx ensurepath" \
+        "" \
+        "Open a new terminal after running \`pipx ensurepath\`, then re-run this script."
 fi
 
-echo "✓  pipx found"
+ok "pipx found"
 
 # ----------------------------------------------------------------------------
 # 3. Check git (needed by skillbench to read remotes)
 # ----------------------------------------------------------------------------
 
 if command -v git &>/dev/null; then
-    echo "✓  git found"
+    ok "git found"
 else
-    echo "❌  git not found."
-    echo "      macOS:  brew install git"
-    echo "      Linux:  sudo apt install git"
-    exit 1
+    fail "git not found." \
+        "Install:" \
+        "  macOS:         brew install git" \
+        "  Debian/Ubuntu: sudo apt install git"
 fi
 
 # ----------------------------------------------------------------------------
 # 4. Install / upgrade skillbench via pipx
 # ----------------------------------------------------------------------------
 
-echo "→  Installing skillbench via pipx..."
+step "Installing skillbench via pipx..."
 if pipx list --short 2>/dev/null | awk '{print $1}' | grep -qx skillbench; then
     # Upgrade an already-installed pipx package in-place from this checkout.
     pipx install --force --python "$PYTHON" "$REPO_ROOT" >/dev/null
@@ -144,12 +163,11 @@ if [ -z "$SKILLBENCH_BIN" ]; then
 fi
 
 if [ -z "$SKILLBENCH_BIN" ]; then
-    echo "❌  Could not locate the installed \`skillbench\` binary."
-    echo "    Try: pipx ensurepath && open a new terminal."
-    exit 1
+    fail "Could not locate the installed \`skillbench\` binary." \
+        "Try: pipx ensurepath && open a new terminal."
 fi
 
-echo "✓  skillbench installed: $SKILLBENCH_BIN"
+ok "skillbench installed: $SKILLBENCH_BIN"
 
 # ----------------------------------------------------------------------------
 # 5. Optional: gh CLI (used for repo classification)
@@ -158,14 +176,16 @@ echo "✓  skillbench installed: $SKILLBENCH_BIN"
 if command -v gh &>/dev/null; then
     if gh auth status &>/dev/null; then
         GH_USER=$(gh api user --jq .login 2>/dev/null || echo "unknown")
-        echo "✓  GitHub CLI authenticated (${GH_USER})"
+        ok "GitHub CLI authenticated (${GH_USER})"
     else
-        echo "→  Authenticating GitHub CLI..."
+        step "Authenticating GitHub CLI..."
         gh auth login || true
     fi
 else
-    echo "⚠  gh not found. Install it for richer repo classification (brew install gh / sudo apt install gh)."
-    echo "   Without gh, all repos are classified as private (safe default)."
+    printf "\033[33m⚠  gh not found. Without it, all repos are classified as private (safe default).\033[0m\n"
+    printf "\033[33m   Install for richer repo classification:\033[0m\n"
+    printf "\033[33m     macOS:         brew install gh\033[0m\n"
+    printf "\033[33m     Debian/Ubuntu: sudo apt install gh\033[0m\n"
 fi
 
 # ----------------------------------------------------------------------------

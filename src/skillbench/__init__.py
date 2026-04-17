@@ -665,7 +665,16 @@ def classify_workspace_entry(path: str, info: dict, allowed_orgs: list[str]) -> 
         elif license_key == "other":
             reasons.append("unrecognized license in LICENSE file")
     else:
-        if remote and repo_scope["classification"] not in {"no_github_remote", "github_org_mismatch"}:
+        # `gh is None` means classify_github_repo returned None. That happens
+        # either because the URL wasn't a GitHub remote (slug extraction
+        # failed → repo_scope classification = "no_github_remote") or because
+        # the gh API call itself failed (binary missing, token invalid, or
+        # network error). Distinguish so the reason matches the actual cause.
+        if repo_scope["remote_org"]:
+            # Slug extracted successfully → it IS a GitHub repo; gh just
+            # couldn't reach it. Blame gh, not the repo.
+            reasons.append("gh API call failed (check gh auth / GH_TOKEN)")
+        elif remote and repo_scope["classification"] not in {"no_github_remote", "github_org_mismatch"}:
             reasons.append("not a GitHub repo")
         if license_id:
             reasons.append(f"manifest license: {license_id}")
@@ -679,29 +688,22 @@ def classify_workspace_entry(path: str, info: dict, allowed_orgs: list[str]) -> 
 
 
 def _gh_cli_available() -> tuple[bool, str]:
-    """Check if the GitHub CLI can make authenticated calls.
+    """Check if the GitHub CLI can actually make authenticated calls.
 
     Returns ``(ok, reason)`` where ``reason`` is one of:
       - ``"ok"`` — gh is usable
       - ``"not_installed"`` — gh binary missing
-      - ``"not_authenticated"`` — gh installed but no auth
-    """
-    # With a token set, gh uses it automatically — skip the slow `gh auth
-    # status` probe and just confirm the binary exists. We check the binary
-    # (unlike the Makefile's host-side preflight) because this runs wherever
-    # skillbench executes and `classify_github_repo` calls `gh` directly.
-    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
-        try:
-            subprocess.run(
-                ["gh", "--version"],
-                capture_output=True, text=True, timeout=5,
-            )
-            return (True, "ok")
-        except FileNotFoundError:
-            return (False, "not_installed")
-        except Exception:
-            return (False, "not_installed")
+      - ``"not_authenticated"`` — gh installed but auth failed (no creds,
+        expired session, or invalid GH_TOKEN)
+      - ``"invalid_token"`` — GH_TOKEN / GITHUB_TOKEN env var is set but
+        gh auth status still fails (token likely revoked / malformed)
 
+    We always run ``gh auth status`` — even when GH_TOKEN is set — because
+    an invalid token needs to be surfaced to the user up front. Without this
+    check, classify_github_repo would silently fail on every call and
+    workspaces would be reported as "not a GitHub repo", which is a
+    misleading diagnosis for a real classification problem.
+    """
     try:
         result = subprocess.run(
             ["gh", "auth", "status"],
@@ -709,6 +711,10 @@ def _gh_cli_available() -> tuple[bool, str]:
         )
         if result.returncode == 0:
             return (True, "ok")
+        # Auth failed. If the user explicitly provided a token, the token
+        # is the likely culprit; otherwise it's a plain "not logged in".
+        if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+            return (False, "invalid_token")
         return (False, "not_authenticated")
     except FileNotFoundError:
         return (False, "not_installed")
@@ -730,16 +736,26 @@ def _check_gh_once() -> bool:
         ok, reason = _gh_cli_available()
         _GH_AVAILABLE = ok
         if not ok:
-            state = "not installed" if reason == "not_installed" else "not authenticated"
-            # ANSI yellow (soft warn; we already hard-failed at preflight when
-            # appropriate). Border keeps the block visually self-contained.
             y, r = "\033[33m", "\033[0m"
             bar = "─" * 60
             print()
             print(f"{y}{bar}{r}")
-            print(f"{y}⚠  gh {state} → every repo will be treated as private.{r}")
-            print(f"{y}   Fix:  brew/apt install gh && gh auth login{r}")
-            print(f"{y}   Or:   GH_TOKEN=<pat>    (docs/gh-token.md){r}")
+            if reason == "not_installed":
+                print(f"{y}⚠  gh not installed → every repo will be treated as private.{r}")
+                print(f"{y}   Fix:  brew/apt install gh && gh auth login{r}")
+                print(f"{y}   Or:   GH_TOKEN=<pat>    (docs/gh-token.md){r}")
+            elif reason == "invalid_token":
+                # Most likely a placeholder / revoked / expired token.
+                print(f"{y}⚠  GH_TOKEN set but gh auth status failed.{r}")
+                print(f"{y}   The token may be invalid, revoked, or missing SSO.{r}")
+                print(f"{y}   Create a fresh one and re-run:{r}")
+                print(f"{y}     gh auth token                    (if logged in locally){r}")
+                print(f"{y}     https://github.com/settings/tokens (PAT → Classic, 'repo' scope){r}")
+                print(f"{y}   See docs/gh-token.md for scopes and SSO authorization.{r}")
+            else:  # "not_authenticated"
+                print(f"{y}⚠  gh not authenticated → every repo will be treated as private.{r}")
+                print(f"{y}   Fix:  gh auth login{r}")
+                print(f"{y}   Or:   GH_TOKEN=<pat>    (docs/gh-token.md){r}")
             print(f"{y}{bar}{r}")
             print()
     return _GH_AVAILABLE
@@ -1763,13 +1779,57 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
     picker still feels self-contained without nuking scroll-back; the
     fallback is a plain inline prompt for the same reason.
     """
-    # Shared header content (matches the prior inline version, compact).
-    def _header() -> None:
-        print(
-            f"Scope: {scope_label}. "
-            "Sessions are PII-scrubbed; source code is never collected."
-        )
-        print("Details: docs/privacy.md\n")
+    # Visual emphasis via yellow box + blank lines — matching the style of
+    # _check_gh_once. We intentionally do NOT clear the screen here: some
+    # terminals (or "paste scrollback" workflows) drop the cleared lines
+    # from view entirely, making the earlier [1/5]/[2/5] pipeline output
+    # feel lost even though scroll-back technically retains it. Keeping the
+    # output inline preserves a coherent, copy-pastable session log.
+    y, r = "\033[33m", "\033[0m"
+    bar = "─" * 60
+
+    # If gh was available and returned real data, classification is
+    # trustworthy and we don't need an extra "Proceed?" confirmation before
+    # the picker — users can still cancel inside the picker with Ctrl-C.
+    # If gh was NOT available, every repo was force-classified as "private,
+    # no license", so the selectable list is based on org-scope alone and
+    # the user should explicitly confirm before acting on that subset.
+    gh_ok = _check_gh_once()
+
+    print()
+    print()
+    print(f"{y}{bar}{r}")
+    print(f"{y}  No auto-includable (public + OSS) workspaces in scope.{r}")
+    print(f"{y}  {len(selectable)} private workspace(s) eligible for manual selection.{r}")
+    print(f"{y}{r}")
+    print(f"{y}  Scope: {scope_label}{r}")
+    print(f"{y}  Sessions are PII-scrubbed; source code is never collected.{r}")
+    print(f"{y}  Details: docs/privacy.md{r}")
+    if not gh_ok:
+        print(f"{y}{r}")
+        print(f"{y}  NOTE: gh is unavailable — visibility / license data is not{r}")
+        print(f"{y}        verified. Proceed only if you trust the org-scope filter.{r}")
+    print(f"{y}{bar}{r}")
+    print()
+
+    if not gh_ok:
+        # Require explicit confirmation because classification is suspect.
+        try:
+            confirm = _tty_input("Proceed anyway? [y/N] ").strip().lower()
+        except KeyboardInterrupt:
+            print("\nAborted by user.", file=sys.stderr)
+            sys.exit(130)
+        except EOFError:
+            print(
+                "\nNo interactive input available (headless run?). Re-run with --yes "
+                "or under a TTY.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # Default (empty) is "no" in this defensive path.
+        if confirm not in ("y", "yes"):
+            print("Aborted.")
+            sys.exit(0)
 
     # ---- Rich path: questionary checkbox UI ----
     # Set SKILLBENCH_DEBUG=1 to print the exact reason we fall back to the
@@ -1798,7 +1858,6 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
                 # questionary renders inline (rewriting the same lines as you
                 # toggle), which preserves scroll-back of earlier pipeline
                 # output — no screen clear is needed or wanted here.
-                _header()
                 choices = [
                     questionary.Choice(
                         title=(
@@ -1809,10 +1868,17 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
                     )
                     for e in selectable
                 ]
+                # Instruction explicitly mentions Ctrl-C so users know how to
+                # cancel — questionary doesn't expose ESC as a built-in cancel
+                # key, and adding one via prompt_toolkit's private API was
+                # brittle across versions. Ctrl-C is the terminal-wide
+                # standard and works reliably.
                 selected = questionary.checkbox(
-                    "Select private workspaces to include (space to toggle, enter to confirm)",
+                    "Select private workspaces to include",
                     choices=choices,
-                    instruction="↑/↓ move · space toggle · a toggle all · enter confirm",
+                    instruction=(
+                        "  (space: toggle · a: toggle all · enter: confirm · Ctrl-C: cancel)"
+                    ),
                 ).ask()
                 if selected is None:  # user hit Ctrl-C
                     print("Aborted.")
@@ -1828,7 +1894,7 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
     # ---- Fallback: inline numbered list + comma input ----
     # No screen clear here either: scroll-back of the [1/5]/[2/5] logs is how
     # users (and support) figure out why auto-include landed on 0.
-    _header()
+    # (Header was printed earlier, before the Proceed? confirmation.)
     print("Select private workspaces to include:")
     for i, e in enumerate(selectable):
         convs = e.get("conversations", "?")
@@ -1966,13 +2032,15 @@ def cmd_collect(args):
         allowed_paths = [e["path"] for e in (included + selectable_excluded)]
 
     if not allowed_paths:
-        print("\nNo auto-includable (public + OSS) workspaces in scope.")
         if selectable_excluded and not getattr(args, "yes", False):
+            # _select_workspaces prints its own framed "proceed?" block
+            # including the "no auto-includable..." headline.
             allowed_paths = _select_workspaces(
                 selectable_excluded,
                 scope_label=format_allowed_orgs(allowed_orgs),
             )
         else:
+            print("\nNo auto-includable (public + OSS) workspaces in scope.")
             print("Nothing to collect in the allowed GitHub org scope.")
             print("Hint: re-run with --include-excluded, or see docs/details.md.")
             sys.exit(1)

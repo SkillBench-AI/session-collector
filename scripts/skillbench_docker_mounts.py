@@ -3,7 +3,8 @@
 Generate a minimal set of Docker bind-mount args for SkillBench collect.
 
 Why this exists:
-- `skillbench.py collect` reads sessions from ~/.claude, ~/.gemini, ~/.codex...
+- `skillbench collect` (package entry point at src/skillbench/) reads sessions
+  from ~/.claude, ~/.gemini, ~/.codex...
 - It also checks that each session's workspace path exists, then runs `git -C`
   and `gh repo view` against those workspaces.
 
