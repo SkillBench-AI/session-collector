@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # lint: fast static checks on every Python / shell / Makefile artefact.
+  # Catches syntax regressions in minutes before we pay for slower jobs.
+  # -------------------------------------------------------------------------
+  lint:
+    name: Lint (python + shell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python AST parse check
+        run: |
+          set -euo pipefail
+          # Fail fast if any source file has a syntax error.
+          find src tests scripts -name '*.py' -print0 \
+            | xargs -0 -n1 python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read()); print("ok:", sys.argv[1])'
+
+      - name: Shell syntax check (bash -n)
+        run: |
+          set -euo pipefail
+          for f in collect.sh andela-collect.sh scripts/_docker_run.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+
+      - name: Makefile parse (dry-run)
+        run: |
+          set -euo pipefail
+          # --dry-run exits non-zero on syntax errors in the Makefile itself.
+          # We also list the targets we expect to exist.
+          make -n docker-build >/dev/null
+          make -n preflight-host >/dev/null
+
+  # -------------------------------------------------------------------------
+  # test: pytest across the supported Python range. We support 3.9+ per
+  # pyproject.toml; keeping the matrix honest prevents drift.
+  # -------------------------------------------------------------------------
+  test:
+    name: pytest (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package (editable + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  # -------------------------------------------------------------------------
+  # shell-install: exercise the curl|bash install path end-to-end on a clean
+  # Ubuntu runner. This is the path every pilot user actually follows, so it
+  # earns its own job. We invoke `collect --help` through the script to make
+  # sure pipx install + entry-point resolution all work without touching
+  # real agent data.
+  # -------------------------------------------------------------------------
+  shell-install:
+    name: Install flow (collect.sh / andela-collect.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pipx
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --user pipx
+          python -m pipx ensurepath
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run collect.sh --help (installs via pipx, invokes collect --help)
+        run: bash collect.sh --help
+
+      - name: Verify skillbench is on PATH after collect.sh
+        run: |
+          set -euo pipefail
+          command -v skillbench
+          skillbench --help >/dev/null
+          skillbench collect --help >/dev/null
+
+      - name: Run andela-collect.sh --help
+        # Re-uses the already-installed pipx package; confirms the Andela
+        # wrapper still feeds `--allowed-orgs` correctly.
+        run: bash andela-collect.sh --help
+
+  # -------------------------------------------------------------------------
+  # docker: build the image and smoke-test the two entry points from inside
+  # the container. This mirrors `make docker-collect` without the host mounts
+  # (which aren't available in CI) or gh auth (which `--help` doesn't need).
+  # -------------------------------------------------------------------------
+  docker:
+    name: Docker build + smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          tags: skillbench-session-collector:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: "Smoke: python3 -m skillbench --help"
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            skillbench-session-collector:ci \
+            python3 -m skillbench --help
+
+      - name: "Smoke: python3 -m skillbench collect --help"
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            skillbench-session-collector:ci \
+            python3 -m skillbench collect --help
+
+      - name: "Smoke: gh + git are installed inside the image"
+        run: |
+          docker run --rm skillbench-session-collector:ci \
+            sh -c 'command -v gh && command -v git && gh --version | head -n1'
