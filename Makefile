@@ -41,7 +41,27 @@ GH_MOUNTS := \
 # Dynamically computed mounts for real workspace folders referenced by sessions
 WORKSPACE_MOUNTS := $(shell python3 scripts/skillbench_docker_mounts.py 2>/dev/null)
 
-.PHONY: docker-build docker-collect docker-collect-all docker-collect-verbose docker-shell preflight-gh
+.PHONY: docker-build docker-collect docker-collect-all docker-collect-verbose docker-shell preflight-gh preflight-host
+
+# Preflight: check host tooling that the Docker flow needs.
+#
+# - docker:  actually runs the container
+# - python3: resolves scripts/skillbench_docker_mounts.py so workspace folders
+#            outside ~/.claude / ~/.gemini / ~/.codex get mounted read-only.
+#            Without it the container silently misses real repos and
+#            classifies them all as "no git remote".
+preflight-host:
+	@BAR="────────────────────────────────────────────────────────────"; \
+	MISSING=""; \
+	command -v docker  >/dev/null 2>&1 || MISSING="$$MISSING docker"; \
+	command -v python3 >/dev/null 2>&1 || MISSING="$$MISSING python3"; \
+	if [ -n "$$MISSING" ]; then \
+		printf '\033[31m%s\n✗  Missing host tool(s):%s\033[0m\n' "$$BAR" "$$MISSING"; \
+		printf '\033[31m%s\033[0m\n' "   Docker:  https://docs.docker.com/get-docker/"; \
+		printf '\033[31m%s\033[0m\n' "   Python3: brew install python  (macOS)  /  sudo apt install python3  (Debian/Ubuntu)"; \
+		printf '\033[31m%s\033[0m\n' "$$BAR"; \
+		exit 1; \
+	fi
 
 # Preflight: require GitHub CLI auth on the host before starting Docker.
 #
@@ -79,7 +99,7 @@ preflight-gh:
 docker-build:
 	docker build -t "$(IMAGE)" .
 
-docker-collect: preflight-gh docker-build
+docker-collect: preflight-host preflight-gh docker-build
 	@mkdir -p dist
 	docker run --rm $(DOCKER_INTERACTIVE) \
 		--user "$$(id -u):$$(id -g)" \
