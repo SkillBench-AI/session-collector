@@ -229,7 +229,9 @@ def test_collect_prompt_displays_git_remote_org_for_selectable_workspaces(capsys
 
     assert exc_info.value.code == 0
     output = capsys.readouterr().out
-    assert "GitHub org: andela-technology" in output
+    # selectable row shows the detected GitHub org inline
+    assert "org: andela-technology" in output
+    # blocked rows still surface the blocked workspace + reason
     assert "blocked-private" in output
     assert "outside allowed orgs (someone)" in output
 
