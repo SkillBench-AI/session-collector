@@ -64,7 +64,15 @@ if ! is_session_collector_repo; then
     fi
     if [ -d "$REPO_DIR/.git" ]; then
         step "Repository already cloned. Updating..."
-        git -C "$REPO_DIR" pull --ff-only || true
+        # Surface pull errors (network, divergence, non-ff) instead of
+        # continuing silently on a stale checkout. If the user has local
+        # changes, they can resolve by deleting $REPO_DIR and re-running.
+        if ! git -C "$REPO_DIR" pull --ff-only; then
+            fail "\`git pull --ff-only\` failed in '$REPO_DIR'." \
+                "The checkout may be stale or diverged from origin." \
+                "Fix manually, or remove the directory and re-run:" \
+                "  rm -rf '$REPO_DIR' && bash collect.sh"
+        fi
     elif [ -d "$REPO_DIR" ]; then
         fail "'$REPO_DIR' exists but is not a git repository." \
             "Remove it or choose a different working directory."
@@ -233,7 +241,10 @@ echo "  Installed command : $SKILLBENCH_BIN"
 echo "  Repo checkout     : $REPO_ROOT"
 echo ""
 echo "  To re-run later (exactly as just now):"
-echo "      $SKILLBENCH_BIN collect" "$@"
+# `printf '%q'` escapes each argument so the printed command round-trips
+# through shell parsing (preserves spaces, quotes, globs, etc.).
+RERUN_CMD="$(printf '%q ' "$SKILLBENCH_BIN" collect "$@")"
+echo "      ${RERUN_CMD% }"
 echo ""
 if ! command -v skillbench &>/dev/null; then
     echo "  Hint: \`skillbench\` is not on PATH in this shell yet."

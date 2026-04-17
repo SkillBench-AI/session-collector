@@ -207,12 +207,17 @@ echo "  Installed command : $SKILLBENCH_BIN"
 echo "  Repo checkout     : $REPO_ROOT"
 echo ""
 echo "  To re-run later (exactly as just now):"
-echo "      $SKILLBENCH_BIN collect --allowed-orgs $ANDELA_ORGS_STR" "$@"
+# `printf '%q'` escapes each argument so the printed command round-trips
+# through shell parsing — users can paste it back verbatim even if they
+# passed flags with spaces, quotes, or globs.
+RERUN_CMD="$(printf '%q ' "$SKILLBENCH_BIN" collect --allowed-orgs "${ANDELA_ORGS[@]}" "$@")"
+echo "      ${RERUN_CMD% }"
 echo ""
 if ! command -v skillbench &>/dev/null; then
+    HINT_CMD="$(printf '%q ' skillbench collect --allowed-orgs "${ANDELA_ORGS[@]}")"
     echo "  Hint: \`skillbench\` is not on PATH in this shell yet."
     echo "        Run \`pipx ensurepath\` once and open a new terminal,"
-    echo "        after which you can just run: skillbench collect --allowed-orgs $ANDELA_ORGS_STR"
+    echo "        after which you can just run: ${HINT_CMD% }"
     echo ""
 fi
 
