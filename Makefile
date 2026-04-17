@@ -121,7 +121,7 @@ docker-collect: preflight-host preflight-gh docker-build
 		$(GH_MOUNTS) \
 		$(WORKSPACE_MOUNTS) \
 		"$(IMAGE)" \
-		python3 skillbench.py collect $(COLLECT_FLAGS)
+		python3 -m skillbench collect $(COLLECT_FLAGS)
 
 docker-collect-all:
 	$(MAKE) docker-collect INCLUDE_EXCLUDED=1
@@ -139,7 +139,7 @@ docker-collect-verbose: docker-build
 		$(GH_MOUNTS) \
 		$(WORKSPACE_MOUNTS) \
 		"$(IMAGE)" \
-		python3 skillbench.py collect
+		python3 -m skillbench collect
 
 docker-shell: docker-build
 	docker run --rm $(DOCKER_INTERACTIVE) \

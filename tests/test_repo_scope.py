@@ -204,8 +204,12 @@ def test_collect_prompt_displays_git_remote_org_for_selectable_workspaces(capsys
     with patch.dict(
         sys.modules,
         {
-            "session_parser": fake_session_parser,
-            "sanitizer": SimpleNamespace(Sanitizer=FakeSanitizer),
+            # cmd_collect does `from .session_parser import SessionScanner` inside
+            # the function body, which resolves to skillbench.session_parser after
+            # the package move. Patching that key lets the lazy import pick up
+            # our FakeScanner.
+            "skillbench.session_parser": fake_session_parser,
+            "skillbench.sanitizer": SimpleNamespace(Sanitizer=FakeSanitizer),
         },
     ), patch.object(skillbench, "git_remote_url", side_effect=fake_git_remote), patch.object(
         skillbench,

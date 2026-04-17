@@ -3,7 +3,7 @@ set -e
 
 # SkillBench session-collector
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/collect.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/scripts/collect.sh | bash
 #   bash collect.sh [skillbench collect options]
 #
 # This script:

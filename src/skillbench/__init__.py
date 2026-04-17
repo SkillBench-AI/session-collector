@@ -1870,8 +1870,8 @@ def cmd_collect(args):
     Replaces the manual 4-step workflow with a single interactive command.
     No CASS dependency — reads sessions directly from local agent log files.
     """
-    from session_parser import SessionScanner
-    from sanitizer import Sanitizer
+    from .session_parser import SessionScanner
+    from .sanitizer import Sanitizer
 
     allowed_orgs = normalize_allowed_orgs(
         getattr(args, "allowed_orgs", PILOT_ALLOWED_GITHUB_ORGS),

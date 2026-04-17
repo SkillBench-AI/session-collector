@@ -41,7 +41,7 @@ See [docs/gh-token.md](docs/gh-token.md) for token scopes and safe handling.
 ### One-liner install (macOS/Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/andela-collect.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/scripts/andela-collect.sh | bash
 ```
 
 Re-runs later: `skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews`.
@@ -67,7 +67,7 @@ keeps it out of shell history; see [docs/gh-token.md](docs/gh-token.md)):
 ### One-liner install (macOS/Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/collect.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/scripts/collect.sh | bash
 ```
 
 Re-runs later: `skillbench collect`.
@@ -98,5 +98,4 @@ team.
 - **Using `GH_TOKEN` without installing `gh`:** [docs/gh-token.md](docs/gh-token.md)
 - **Privacy & data policy:** [docs/privacy.md](docs/privacy.md)
 - **Flags, Makefile knobs, step-by-step pipeline, CASS mode:** [docs/details.md](docs/details.md)
-- **Design spec:** [SPEC.md](SPEC.md)
 - **Recent changes:** [commit history](https://github.com/SkillBench-AI/session-collector/commits/main).

@@ -18,8 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 
-[tool.setuptools]
-py-modules = ["skillbench", "session_parser", "sanitizer"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [project.scripts]
 skillbench = "skillbench:main"

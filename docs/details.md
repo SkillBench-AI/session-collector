@@ -138,6 +138,3 @@ This is a **complementary data layer**, not a replacement:
 | Keystroke | skillmeter VS Code extension | Character-level | How much AI wrote vs. you |
 | Session | session-collector (this repo) | Conversation-level | How effectively you direct AI |
 
-## Design spec
-
-See [../SPEC.md](../SPEC.md) for the full design.

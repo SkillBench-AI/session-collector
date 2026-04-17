@@ -25,10 +25,11 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
 
     # Import from repo without requiring installation.
+    # Package lives under src/skillbench/ per the project layout.
     import sys
 
-    sys.path.insert(0, str(repo_root))
-    from session_parser import scan_sessions  # noqa: E402
+    sys.path.insert(0, str(repo_root / "src"))
+    from skillbench.session_parser import scan_sessions  # noqa: E402
 
     scanner = scan_sessions(verbose=False)
     summaries = scanner.get_workspace_summary()
