@@ -1,0 +1,6 @@
+{"parentUuid":null,"cwd":"/test","sessionId":"sess-bad","version":"2.1.36","type":"user","message":{"role":"user","content":"Hello"},"uuid":"msg-m01","timestamp":"2026-02-28T10:00:00.000Z"}
+THIS IS NOT VALID JSON AT ALL {{{
+{"type":"summary","timestamp":"2026-02-28T10:00:01.000Z","summary":"A summary line that should be skipped"}
+{"type":"file-history-snapshot","messageId":"snap-001","snapshot":{"trackedFileBackups":{}},"isSnapshotUpdate":false}
+{"type":"progress","data":{"type":"hook_progress","hookEvent":"PostToolUse"},"timestamp":"2026-02-28T10:00:02.000Z"}
+{"parentUuid":"msg-m01","cwd":"/test","sessionId":"sess-bad","version":"2.1.36","type":"assistant","message":{"model":"claude-opus-4-6","id":"msg_bad","type":"message","role":"assistant","content":"Hi there! How can I help?","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":8}},"requestId":"req_bad","uuid":"msg-m02","timestamp":"2026-02-28T10:00:03.000Z"}

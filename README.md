@@ -1,34 +1,92 @@
 # session-collector
 
-Boot block tool + session-level analysis pipeline for SkillBench.
+Collect and analyze your AI coding sessions locally. No data leaves your machine until you share the sanitized export.
 
-## What is this?
+## Prerequisites
 
-A local CLI tool that sits on top of [CASS](https://github.com/Dicklesworthstone/coding_agent_session_search) and lets users:
-1. Browse their indexed coding agent sessions (Claude Code, Cursor, Copilot, Gemini, Aider, etc.)
-2. Auto-classify projects by git visibility + OSS license (MIT/Apache = auto-include, proprietary/missing = exclude)
-3. Review/edit an allowlist of folders to share
-4. Push selected session data to SkillBench for analysis
+Install once, on the host:
 
-Users get back a dashboard showing their agentic engineering metrics — processed by our server-side analysis pipeline.
+- **Docker** — for the recommended Docker workflow (macOS / Linux / Windows via Docker Desktop).
+- **GitHub authentication** — either install the GitHub CLI **or** use a Personal Access Token:
+  - `gh` CLI: `brew install gh && gh auth login` (macOS) / `sudo apt install gh && gh auth login` / [cli.github.com](https://cli.github.com/)
+  - Or set `GH_TOKEN=<personal access token>` before running — see [docs/gh-token.md](docs/gh-token.md) for scopes and safe handling.
+- **git** — needed to read remotes from your project folders.
+- *(Python workflows only)* **Python 3.9+** and **[pipx](https://pipx.pypa.io/)**:
+  - macOS: `brew install pipx && pipx ensurepath`
+  - Debian / Ubuntu: `sudo apt install pipx && pipx ensurepath`
+  - Any Python: `python3 -m pip install --user pipx && python3 -m pipx ensurepath`
 
-## Status
+> Want to skip the GitHub check entirely and rely only on manual private-repo
+> selection? Run `ALLOW_NO_GH=1 make docker-collect`.
 
-**Spec phase.** See [SPEC.md](./SPEC.md) for the full design.
+## Getting started
 
-Customer 0: Chris Sells (Gastown Discord).
+Pick whichever fits your setup — they produce the same sanitized export.
 
-## How it fits with skillmeter
+### Docker (recommended)
 
-This is a **complementary data layer**, not a replacement:
+```bash
+git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
+cd session-collector
+make docker-collect      # public + OSS repos only (safe default)
+make docker-collect-all  # also include private / unlicensed workspaces (opt-in)
+```
 
-| Layer | Tool | Granularity | What it tells you |
-|-------|------|-------------|-------------------|
-| Keystroke | skillmeter VS Code extension | Character-level | How much AI wrote vs. you |
-| Session | session-collector (this repo) | Conversation-level | How effectively you direct AI |
+Restrict collection to specific GitHub orgs (e.g. your company + personal account):
 
-See the "Compatibility" section in SPEC.md for integration details.
+```bash
+make docker-collect ALLOWED_ORGS="your-company your-github-username"
+```
 
-## Team
+Prefer a token to installing `gh`? Prefix the same command with `GH_TOKEN=…`
+(leading space keeps it out of shell history):
 
-Questions, concerns, strong opinions — open an issue or comment on the spec. This is intentionally rough. The point is to get something concrete everyone can react to.
+```bash
+ GH_TOKEN=<YOUR_GITHUB_TOKEN> make docker-collect
+```
+
+See [docs/gh-token.md](docs/gh-token.md) for token scopes and safe handling.
+
+### One-liner install (macOS / Linux)
+
+Installs the CLI via `pipx` and runs the collect in one step:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/collect.sh | bash
+```
+
+Re-runs later (no installer needed):
+
+```bash
+skillbench collect                                             # all orgs
+skillbench collect --allowed-orgs your-company your-username   # restrict scope
+```
+
+### Manual pipx install
+
+```bash
+git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
+cd session-collector
+pipx install .
+skillbench collect                                             # all orgs
+skillbench collect --allowed-orgs your-company your-username   # restrict scope
+```
+
+## Output & upload
+
+Sanitized weekly exports land in `dist/` on your host
+(e.g. `dist/skillbench_export_sanitized_2026_W16.json`). Drag-and-drop those
+files — and only those — into the **Upload Data** page of your SkillBench
+dashboard. The sanitizer redacts API keys, emails, private IPs, home paths,
+and other common secrets before writing.
+
+The dashboard URL is shared separately by your SkillBench point of contact.
+If you don't have it yet or you run into issues, reach out to the SkillBench
+team.
+
+## More
+
+- **Using `GH_TOKEN` without installing `gh`:** [docs/gh-token.md](docs/gh-token.md)
+- **Privacy & data policy:** [docs/privacy.md](docs/privacy.md)
+- **Flags, Makefile knobs, step-by-step pipeline, CASS mode:** [docs/details.md](docs/details.md)
+- **Recent changes:** [commit history](https://github.com/SkillBench-AI/session-collector/commits/main).

@@ -1,0 +1,4 @@
+{"timestamp":"2025-09-30T15:42:34.559Z","type":"session_meta","payload":{"id":"test-session-id","cwd":"/home/user/soldier-project","cli_version":"0.42.0","git":{"branch":"main"}}}
+{"timestamp":"2025-09-30T15:42:36.190Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Help me implement matrix completion with CMA-ES optimization"}]}}
+{"timestamp":"2025-09-30T15:43:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"I'll implement matrix completion using CMA-ES. Let me create the solver."},{"type":"tool_use","id":"call_solver01","name":"write_file","input":{"path":"solver.py","content":"import numpy as np\nfrom cmaes import CMA\n\ndef matrix_completion(M, mask):\n    pass"}}]}}
+{"timestamp":"2025-09-30T15:43:05.000Z","type":"event_msg","payload":{"type":"token_count","input_tokens":100,"output_tokens":200}}

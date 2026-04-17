@@ -1,0 +1,53 @@
+{
+  "sessionId": "test-v031-session",
+  "projectHash": "abc123def",
+  "startTime": "2026-03-01T15:00:00Z",
+  "lastUpdated": "2026-03-01T15:05:00Z",
+  "kind": "main",
+  "messages": [
+    {
+      "id": "msg-001",
+      "timestamp": "2026-03-01T15:00:10Z",
+      "type": "user",
+      "content": "Analyze the project structure"
+    },
+    {
+      "id": "msg-002",
+      "timestamp": "2026-03-01T15:00:15Z",
+      "type": "gemini",
+      "content": "I'll analyze the project structure for you.",
+      "model": "gemini-3-pro-preview",
+      "thoughts": [
+        {
+          "subject": "Analysis Plan",
+          "description": "Starting with directory listing to understand the layout.",
+          "timestamp": "2026-03-01T15:00:14Z"
+        }
+      ],
+      "toolCalls": [
+        {
+          "id": "tool-001",
+          "name": "list_directory",
+          "args": {"path": "."},
+          "status": "success",
+          "timestamp": "2026-03-01T15:00:16Z",
+          "result": "src/\ntests/\npackage.json\nREADME.md"
+        }
+      ],
+      "tokens": {"input": 50, "output": 120, "cached": 0, "total": 170}
+    },
+    {
+      "id": "msg-003",
+      "timestamp": "2026-03-01T15:01:00Z",
+      "type": "info",
+      "content": "Session resumed"
+    },
+    {
+      "id": "msg-004",
+      "timestamp": "2026-03-01T15:01:30Z",
+      "type": "gemini",
+      "content": "The project has a standard Node.js layout with src/ and tests/ directories.",
+      "model": "gemini-3-pro-preview"
+    }
+  ]
+}
