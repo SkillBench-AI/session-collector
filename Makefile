@@ -2,8 +2,12 @@ SHELL := /bin/bash
 
 IMAGE ?= skillbench-session-collector:local
 
-# Enable interactive flags only when a TTY exists.
-DOCKER_INTERACTIVE := $(shell if [ -t 0 ] && [ -t 1 ]; then echo "-it"; elif [ -t 0 ]; then echo "-i"; else echo ""; fi)
+# Compute the right docker interactive flag at RECIPE execution time, not
+# Makefile parse time. `$(shell ...)` is evaluated in a captured subshell
+# where stdout is never a TTY, so it would always drop `-t` and break the
+# in-container questionary picker. The snippet below is embedded verbatim
+# into each recipe and gets a fresh TTY check each run.
+DOCKER_INTERACTIVE = $$(if [ -t 0 ] && [ -t 1 ]; then printf -- "-it"; elif [ -t 0 ]; then printf -- "-i"; fi)
 
 # Host -> container home mapping for agent log mounts
 CONTAINER_HOME ?= /home/app
