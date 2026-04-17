@@ -133,10 +133,18 @@ else
     EFFECTIVE_GH_MOUNTS="$GH_MOUNTS"
 fi
 
-# 5. Run. Mount strings are expanded unquoted so their multiple -v flags
-#    word-split correctly. GH_TOKEN/etc. are forwarded by NAME (docker -e VAR
-#    without =value picks up the current env value).
-# shellcheck disable=SC2086  # intentional word-splitting on mount strings
+# 5. Build a safe array of -v mount args. The three env vars are bash-array
+#    LITERAL strings produced by the Makefile (e.g. `-v "a:b:ro" -v "c:d:ro"`)
+#    and by scripts/skillbench_docker_mounts.py. Naively word-splitting them
+#    turns a path like "/Users/John Doe/..." into two separate tokens with
+#    stray literal quotes. Using `eval` to re-parse them as a bash array
+#    literal preserves quoted paths correctly. The input content is fully
+#    controlled by our own Makefile / helper script, so eval is safe here.
+eval "MOUNTS=(${AGENT_MOUNTS} ${EFFECTIVE_GH_MOUNTS} ${WORKSPACE_MOUNTS})"
+
+# 6. Run. GH_TOKEN/etc. are forwarded by NAME (docker -e VAR without =value
+#    picks up the current env value, so the value never appears in argv).
+# shellcheck disable=SC2086  # $TTY_FLAG is intentionally word-split
 exec docker run --rm $TTY_FLAG \
     --user "$(id -u):$(id -g)" \
     -e HOME="$CONTAINER_HOME" \
@@ -145,8 +153,6 @@ exec docker run --rm $TTY_FLAG \
     ${GITHUB_TOKEN:+-e GITHUB_TOKEN} \
     ${SKILLBENCH_DEBUG:+-e SKILLBENCH_DEBUG} \
     -v "$(pwd):/work" -w /work \
-    $AGENT_MOUNTS \
-    $EFFECTIVE_GH_MOUNTS \
-    $WORKSPACE_MOUNTS \
+    "${MOUNTS[@]}" \
     "$IMAGE" \
     python3 -m skillbench collect "${COLLECT_ARGS[@]}"

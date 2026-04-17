@@ -171,8 +171,15 @@ echo "  Running skillbench collect (Andela pilot)..."
 echo "============================================================"
 echo ""
 
-"$SKILLBENCH_BIN" collect --allowed-orgs "${ANDELA_ORGS[@]}" "$@"
-COLLECT_RC=$?
+# Wrapped in if/else so `set -e` at the top of the script doesn't abort us
+# when collect exits non-zero (e.g. user cancels at the selection prompt,
+# or headless EOF with exit 2). We still want the "Done" footer below to
+# run with the re-run guidance.
+if "$SKILLBENCH_BIN" collect --allowed-orgs "${ANDELA_ORGS[@]}" "$@"; then
+    COLLECT_RC=0
+else
+    COLLECT_RC=$?
+fi
 
 # ----------------------------------------------------------------------------
 # 6. Re-run guidance

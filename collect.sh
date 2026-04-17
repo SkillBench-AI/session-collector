@@ -199,8 +199,15 @@ echo "============================================================"
 echo ""
 
 # Forward any args passed to collect.sh to skillbench collect.
-"$SKILLBENCH_BIN" collect "$@"
-COLLECT_RC=$?
+# Wrapped in if/else so `set -e` at the top of the script doesn't abort us
+# when collect exits non-zero (e.g. user cancels at the selection prompt
+# with exit 0, or headless EOF with exit 2). We still want the "Done"
+# footer below to run with the re-run guidance.
+if "$SKILLBENCH_BIN" collect "$@"; then
+    COLLECT_RC=0
+else
+    COLLECT_RC=$?
+fi
 
 # ----------------------------------------------------------------------------
 # 7. Re-run guidance (works even if ~/.local/bin is not on PATH yet)
