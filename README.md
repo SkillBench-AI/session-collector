@@ -19,7 +19,11 @@ Install once, on the host:
 > Want to skip the GitHub check entirely and rely only on manual private-repo
 > selection? Run `ALLOW_NO_GH=1 make docker-collect`.
 
-## Option A — Docker (recommended)
+## Getting started
+
+Pick whichever fits your setup — they produce the same sanitized export.
+
+### Docker (recommended)
 
 ```bash
 git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
@@ -43,7 +47,7 @@ Prefer a token to installing `gh`? Prefix the same command with `GH_TOKEN=…`
 
 See [docs/gh-token.md](docs/gh-token.md) for token scopes and safe handling.
 
-## Option B — One-liner install (macOS / Linux)
+### One-liner install (macOS / Linux)
 
 Installs the CLI via `pipx` and runs the collect in one step:
 
@@ -58,7 +62,7 @@ skillbench collect                                             # all orgs
 skillbench collect --allowed-orgs your-company your-username   # restrict scope
 ```
 
-## Option C — Manual pipx install
+### Manual pipx install
 
 ```bash
 git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
