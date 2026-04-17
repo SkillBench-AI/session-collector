@@ -115,7 +115,7 @@ docker-collect: preflight-host preflight-gh docker-build
 	    AGENT_MOUNTS="$(AGENT_MOUNTS)" \
 	    GH_MOUNTS="$(GH_MOUNTS)" \
 	    WORKSPACE_MOUNTS="$(WORKSPACE_MOUNTS)" \
-	    scripts/_docker_run.sh
+	    bash scripts/_docker_run.sh
 
 docker-collect-all:
 	$(MAKE) docker-collect INCLUDE_EXCLUDED=1
