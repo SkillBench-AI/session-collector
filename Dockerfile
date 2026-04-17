@@ -8,6 +8,10 @@ ENV GH_VERSION=${GH_VERSION}
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
     && git config --system safe.directory '*'
 
+# Pre-install Python runtime deps so the interactive picker works in the
+# container. Kept minimal — questionary is our only runtime dep for now.
+RUN pip install --no-cache-dir "questionary>=2.0"
+
 # Install GitHub CLI (gh) without apt.
 # This avoids Homebrew/Xcode and also avoids apt cache space issues in minimal Docker setups.
 RUN <<'PY' python3 -
