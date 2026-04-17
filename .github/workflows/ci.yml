@@ -88,6 +88,11 @@ jobs:
   shell-install:
     name: Install flow (collect.sh / andela-collect.sh)
     runs-on: ubuntu-latest
+    # GH_TOKEN=GITHUB_TOKEN lets `gh auth status` pass inside the scripts, so
+    # the interactive `gh auth login` branch is never reached. The scripts also
+    # guard against CI/non-TTY themselves — this is belt-and-suspenders.
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -160,3 +165,39 @@ jobs:
         run: |
           docker run --rm skillbench-session-collector:ci \
             sh -c 'command -v gh && command -v git && gh --version | head -n1'
+
+      - name: "Smoke: skillbench collect --yes (headless run, must exit, not hang)"
+        env:
+          # Let `gh auth status` inside the container pass so we don't trigger
+          # interactive auth paths during collect.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          # Mount an empty HOME so the scanner sees no agent data (no
+          # ~/.claude / ~/.gemini / ~/.codex). We don't care about the exit
+          # code — collect will legitimately exit non-zero with "no sessions"
+          # or "no auto-includable workspaces". What we DO care about: the
+          # process terminates within the timeout. A hang here = regression
+          # in the headless path (e.g. a prompt without `--yes` guard, an
+          # interactive gh login reached unexpectedly, etc.).
+          mkdir -p "$RUNNER_TEMP/empty-home"
+          docker run --rm \
+            -e HOME=/home/app \
+            -e CI=true \
+            -e GH_TOKEN \
+            -v "$RUNNER_TEMP/empty-home:/home/app" \
+            -v "$PWD:/work" -w /work \
+            skillbench-session-collector:ci \
+            timeout 60 python3 -m skillbench collect --yes
+          EXIT=$?
+          echo "collect exit code: $EXIT"
+          if [ "$EXIT" = "124" ]; then
+            echo "::error::skillbench collect hung (60s timeout) — headless path regression."
+            exit 1
+          fi
+          # 0 = sessions found + collected (unlikely here), 1 = no data/no scope
+          # (expected). Anything else is a real error.
+          if [ "$EXIT" != "0" ] && [ "$EXIT" != "1" ]; then
+            echo "::error::unexpected exit code $EXIT (expected 0 or 1 for empty HOME)."
+            exit 1
+          fi

@@ -177,9 +177,20 @@ if command -v gh &>/dev/null; then
     if gh auth status &>/dev/null; then
         GH_USER=$(gh api user --jq .login 2>/dev/null || echo "unknown")
         ok "GitHub CLI authenticated (${GH_USER})"
-    else
+    elif [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
+        ok "Using GH_TOKEN for GitHub classification (docs/gh-token.md)"
+    elif [ -t 1 ] && [ -z "${CI:-}" ]; then
+        # Interactive terminal + not CI → run the device-code flow.
+        # `gh auth login` opens its own prompts against /dev/tty so it still
+        # works when stdin is the curl pipe.
         step "Authenticating GitHub CLI..."
         gh auth login || true
+    else
+        # Non-TTY (CI, piped stdout, nohup, &) → skip interactive auth so we
+        # don't block for the 15-min device-code timeout. skillbench will
+        # classify non-publicly as a safe default.
+        printf "\033[33m⚠  gh installed but not authenticated, and no terminal to run \`gh auth login\`.\033[0m\n"
+        printf "\033[33m   Run \`gh auth login\` manually, or set GH_TOKEN. See docs/gh-token.md.\033[0m\n"
     fi
 else
     printf "\033[33m⚠  gh not found. Without it, all repos are classified as private (safe default).\033[0m\n"
