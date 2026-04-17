@@ -3,7 +3,7 @@ set -e
 
 # SkillBench session-collector — Andela pilot
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/scripts/andela-collect.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/andela-collect.sh | bash
 #   bash andela-collect.sh [skillbench collect options]
 #
 # This script installs skillbench via pipx (so `skillbench` is on PATH without

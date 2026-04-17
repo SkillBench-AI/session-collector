@@ -52,7 +52,7 @@ See [docs/gh-token.md](docs/gh-token.md) for token scopes and safe handling.
 Installs the CLI via `pipx` and runs the collect in one step:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/scripts/collect.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/collect.sh | bash
 ```
 
 Re-runs later (no installer needed):
