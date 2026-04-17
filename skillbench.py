@@ -679,13 +679,29 @@ def classify_workspace_entry(path: str, info: dict, allowed_orgs: list[str]) -> 
 
 
 def _gh_cli_available() -> tuple[bool, str]:
-    """Check if the GitHub CLI is installed and authenticated.
+    """Check if the GitHub CLI can make authenticated calls.
 
     Returns ``(ok, reason)`` where ``reason`` is one of:
       - ``"ok"`` — gh is usable
       - ``"not_installed"`` — gh binary missing
       - ``"not_authenticated"`` — gh installed but no auth
     """
+    # GH_TOKEN / GITHUB_TOKEN take precedence over `gh auth login`: `gh` itself
+    # uses them automatically, so if one is set we just need the binary. This
+    # matches the Makefile preflight policy and keeps the Docker path working
+    # when the host has no `gh`.
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        try:
+            subprocess.run(
+                ["gh", "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return (True, "ok")
+        except FileNotFoundError:
+            return (False, "not_installed")
+        except Exception:
+            return (False, "not_installed")
+
     try:
         result = subprocess.run(
             ["gh", "auth", "status"],
@@ -1737,16 +1753,15 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
     """Show an interactive picker for private/unlicensed workspaces.
 
     Uses ``questionary`` (arrow keys / spacebar / enter) when available, and
-    falls back to a full-screen numbered prompt otherwise. Returns the list of
+    falls back to an inline numbered prompt otherwise. Returns the list of
     selected workspace paths, or calls ``sys.exit`` on cancel / bad input.
 
-    Design note: we intentionally clear the screen *only* at this interactive
-    moment — not between every [N/5] pipeline step. Wizard-style per-step
-    clears would wipe the ``[1/5] Scanning…`` / ``[2/5] Classifying…`` output
-    that users (and support) rely on when something went wrong (e.g. "why did
-    Auto-included land on 0?"). Keeping earlier steps scroll-back-friendly
-    also lets the selection screen double as a clear signal that input is
-    needed.
+    Design note: neither path clears the screen. The earlier ``[1/5] …`` /
+    ``[2/5] …`` pipeline output is exactly what users (and support) need
+    when something went wrong (e.g. "why did Auto-included land on 0?").
+    ``questionary`` rewrites its own lines in place as you toggle, so the
+    picker still feels self-contained without nuking scroll-back; the
+    fallback is a plain inline prompt for the same reason.
     """
     # Shared header content (matches the prior inline version, compact).
     def _header() -> None:
@@ -1757,49 +1772,62 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
         print("Details: docs/privacy.md\n")
 
     # ---- Rich path: questionary checkbox UI ----
+    # Set SKILLBENCH_DEBUG=1 to print the exact reason we fall back to the
+    # numbered list — useful when users expect the TUI but get the legacy UI.
+    debug = bool(os.environ.get("SKILLBENCH_DEBUG"))
+
+    def _fallback_reason(msg: str) -> None:
+        if debug:
+            print(f"[skillbench] questionary disabled: {msg}", file=sys.stderr)
+
     try:
         import questionary  # type: ignore
+    except ImportError as e:
+        questionary = None  # type: ignore
+        _fallback_reason(f"ImportError ({e})")
 
-        # Questionary reads from stdin by default. Our `curl | bash` flow needs
-        # /dev/tty to stay interactive, so we only take the rich path when we
-        # actually have a TTY attached.
-        if sys.stdin.isatty() and sys.stdout.isatty():
-            # Clear the screen so the picker feels full-screen, not scrolled.
-            sys.stdout.write("\033[2J\033[H")
-            sys.stdout.flush()
-            _header()
-            choices = []
-            for e in selectable:
-                convs = e.get("conversations", "?")
-                org = e["remote_org"] or "not detected"
-                choices.append(
+    if questionary is not None:
+        stdin_tty = sys.stdin.isatty()
+        stdout_tty = sys.stdout.isatty()
+        if not (stdin_tty and stdout_tty):
+            _fallback_reason(
+                f"no TTY (stdin.isatty={stdin_tty}, stdout.isatty={stdout_tty})"
+            )
+        else:
+            try:
+                # questionary renders inline (rewriting the same lines as you
+                # toggle), which preserves scroll-back of earlier pipeline
+                # output — no screen clear is needed or wanted here.
+                _header()
+                choices = [
                     questionary.Choice(
-                        title=f"{e['path']}  — {convs} sessions, org: {org}",
+                        title=(
+                            f"{e['path']}  — {e.get('conversations', '?')} sessions, "
+                            f"org: {e['remote_org'] or 'not detected'}"
+                        ),
                         value=e["path"],
                     )
-                )
-            selected = questionary.checkbox(
-                "Select private workspaces to include (space to toggle, enter to confirm)",
-                choices=choices,
-                instruction="↑/↓ move · space toggle · a toggle all · enter confirm",
-            ).ask()
-            if selected is None:  # user hit Ctrl-C
-                print("Aborted.")
-                sys.exit(0)
-            if not selected:
-                print("No workspaces selected. Aborted.")
-                sys.exit(0)
-            print(f"Including {len(selected)} workspace(s).")
-            return list(selected)
-    except ImportError:
-        pass
-    except Exception:
-        # Any questionary runtime error (e.g. tty quirk) → fall back.
-        pass
+                    for e in selectable
+                ]
+                selected = questionary.checkbox(
+                    "Select private workspaces to include (space to toggle, enter to confirm)",
+                    choices=choices,
+                    instruction="↑/↓ move · space toggle · a toggle all · enter confirm",
+                ).ask()
+                if selected is None:  # user hit Ctrl-C
+                    print("Aborted.")
+                    sys.exit(0)
+                if not selected:
+                    print("No workspaces selected. Aborted.")
+                    sys.exit(0)
+                print(f"Including {len(selected)} workspace(s).")
+                return list(selected)
+            except Exception as e:  # e.g. prompt_toolkit TTY quirks
+                _fallback_reason(f"{type(e).__name__}: {e}")
 
-    # ---- Fallback: full-screen numbered list + comma input ----
-    sys.stdout.write("\033[2J\033[H")
-    sys.stdout.flush()
+    # ---- Fallback: inline numbered list + comma input ----
+    # No screen clear here either: scroll-back of the [1/5]/[2/5] logs is how
+    # users (and support) figure out why auto-include landed on 0.
     _header()
     print("Select private workspaces to include:")
     for i, e in enumerate(selectable):

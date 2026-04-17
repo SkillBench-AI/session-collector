@@ -3,11 +3,15 @@ SHELL := /bin/bash
 IMAGE ?= skillbench-session-collector:local
 
 # Compute the right docker interactive flag at RECIPE execution time, not
-# Makefile parse time. `$(shell ...)` is evaluated in a captured subshell
-# where stdout is never a TTY, so it would always drop `-t` and break the
-# in-container questionary picker. The snippet below is embedded verbatim
-# into each recipe and gets a fresh TTY check each run.
-DOCKER_INTERACTIVE = $$(if [ -t 0 ] && [ -t 1 ]; then printf -- "-it"; elif [ -t 0 ]; then printf -- "-i"; fi)
+# Makefile parse time. `$(shell ...)` is evaluated in a captured subshell.
+#
+# Subtlety: even at recipe time, we evaluate this *inside* bash command
+# substitution `$(...)`, where stdout is ALWAYS a pipe. So `[ -t 1 ]` is
+# permanently false and testing it would always drop `-t`, breaking the
+# in-container TUI. Testing only stdin (`[ -t 0 ]`) is the right signal:
+# when the user is running make from a real terminal, stdin is a TTY, and
+# we can safely ask docker to allocate one for the container too.
+DOCKER_INTERACTIVE = $$( [ -t 0 ] && printf -- "-it" || printf -- "-i" )
 
 # Host -> container home mapping for agent log mounts
 CONTAINER_HOME ?= /home/app
@@ -111,6 +115,7 @@ docker-collect: preflight-host preflight-gh docker-build
 		-e PYTHONUNBUFFERED=1 \
 		$${GH_TOKEN:+-e GH_TOKEN} \
 		$${GITHUB_TOKEN:+-e GITHUB_TOKEN} \
+		$${SKILLBENCH_DEBUG:+-e SKILLBENCH_DEBUG} \
 		-v "$$(pwd):/work" -w /work \
 		$(AGENT_MOUNTS) \
 		$(GH_MOUNTS) \
