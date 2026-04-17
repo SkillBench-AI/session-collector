@@ -6,3 +6,12 @@ __pycache__/
 *.pyc
 *.egg-info/
 .DS_Store
+
+# Local-only agent / editor / env configuration
+.claude/
+.cursor/
+.vscode/
+.idea/
+.venv/
+.env
+.env.local

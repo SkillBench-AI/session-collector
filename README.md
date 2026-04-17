@@ -1,217 +1,102 @@
 # session-collector
 
-Collect and analyze your AI coding sessions locally. See how you work with AI — metrics, patterns, and insights — without any data leaving your machine until you choose to share.
+Collect and analyze your AI coding sessions locally. No data leaves your machine until you share the sanitized export.
 
 ## Prerequisites
 
-- **Python 3.9+**
-- **GitHub CLI (`gh`)** — used to check repo visibility and licensing. Install: `brew install gh` (macOS) or see [cli.github.com](https://cli.github.com/). If `gh` is not installed, workspaces are classified as private by default (safe fallback).
+Install once, on the host:
 
-`collect.sh` handles installing `gh` automatically.
+- **Docker** — for the recommended Docker workflow (macOS/Linux/Windows via Docker Desktop).
+- **GitHub authentication** — either install the GitHub CLI **or** use a Personal Access Token:
+  - `gh` CLI: `brew install gh && gh auth login` (macOS) / `sudo apt install gh && gh auth login` / [cli.github.com](https://cli.github.com/)
+  - Or set `GH_TOKEN=<personal access token>` before running (see [docs/gh-token.md](docs/gh-token.md) for token scopes + safe usage)
+- **git** — needed to read remotes from your project folders.
+- *(Python workflows only)* **Python 3.9+** and **[pipx](https://pipx.pypa.io/)**:
+  - macOS: `brew install pipx && pipx ensurepath`
+  - Debian/Ubuntu: `sudo apt install pipx && pipx ensurepath`
+  - Any Python: `python3 -m pip install --user pipx && python3 -m pipx ensurepath`
 
-> **GitHub authentication required:** `gh` must be authenticated before running. If not, you'll see a one-time code and a URL printed in the terminal — open the URL in your browser and enter the code to complete authentication. (`collect.sh` triggers this automatically if needed.)
+> If you want to skip the GitHub check entirely and rely only on manual
+> private-repo selection, run `ALLOW_NO_GH=1 make docker-collect`.
 
-## Quick start — Andela Pilot
+## Quick start — Andela pilot
 
-### Option A — Automatic (recommended, macOS / Linux)
-
-Installs and runs the collector in one step:
-```bash
-curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/andela-collect.sh | bash
-```
-Requires Python 3.9+.
-
-To re-run after initial setup:
-```bash
-curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/andela-collect.sh | bash
-```
-
-### Option B — Manual
+### Docker (recommended)
 
 ```bash
 git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
 cd session-collector
-pip install -e .
-source .venv/bin/activate   # required: skillbench is installed into the local venv, not global PATH
-skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
+make docker-collect ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
 ```
 
-To re-run after initial setup:
+Prefer a token to installing `gh`? Prefix the same command with `GH_TOKEN=…`
+(leading space keeps it out of shell history):
+
 ```bash
-source session-collector/.venv/bin/activate
-skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
+ GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx make docker-collect ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
 ```
 
-### Option C — Windows or Docker
+See [docs/gh-token.md](docs/gh-token.md) for token scopes and safe handling.
+
+### One-liner install (macOS/Linux)
 
 ```bash
-make docker-collect     ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
-make docker-collect-all ALLOWED_ORGS="andela-technology woven-teams woven-reviews"
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/andela-collect.sh | bash
 ```
 
-## Quick start - General Use
+Re-runs later: `skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews`.
 
-### macOS / Linux
+## Quick start — general use
+
+### Docker (recommended)
+
 ```bash
-bash collect.sh
+git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
+cd session-collector
+make docker-collect      # public + OSS repos only (safe default)
+make docker-collect-all  # also include private/unlicensed workspaces (opt-in)
 ```
 
-### Manual (if `collect.sh` fails due to environment issues)
+Without installing `gh`, prefix with a Personal Access Token (leading space
+keeps it out of shell history; see [docs/gh-token.md](docs/gh-token.md)):
+
 ```bash
-pip install -e .
+ GH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx make docker-collect
+```
+
+### One-liner install (macOS/Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/collect.sh | bash
+```
+
+Re-runs later: `skillbench collect`.
+
+### Manual pipx install
+
+```bash
+git clone --depth 1 https://github.com/SkillBench-AI/session-collector.git
+cd session-collector
+pipx install .
 skillbench collect
 ```
 
-### Windows or if you hit/want to avoid environment issues:
-```bash
-make docker-collect      # public/OSS repos only
-make docker-collect-all  # include private repos too (including private/unlicensed workspaces)
-```
+## Output
 
-That's it. The `collect` command will:
-1. **Scan** for coding agent sessions on your machine (Claude Code, Gemini CLI, Codex CLI)
-2. **Classify** your workspaces — only public, OSS-licensed repos are included by default
-3. **Analyze** your sessions and compute agentic engineering metrics
-4. **Export** your session data, split by ISO week by default (e.g. `dist/skillbench_export_sanitized_2026_W12.json`)
-5. **Sanitize** the export automatically (redacts API keys, emails, private IPs, home paths, secrets)
+Sanitized weekly exports land in `dist/` on your host
+(e.g. `dist/skillbench_export_sanitized_2026_W16.json`). Drag-and-drop those
+files — and only those — into the **Upload Data** page of your SkillBench
+dashboard. The sanitizer redacts API keys, emails, private IPs, home paths,
+and other common secrets before writing.
 
-Output will be saved in `dist/`.
+The dashboard URL is shared separately by your SkillBench point of contact.
+If you don't have it yet or you run into issues, reach out to the SkillBench
+team.
 
-### Share your results
+## More
 
-Send the sanitized export file(s) from `dist/` to the SkillBench team. This may be a single file (`skillbench_export_sanitized.json`) or multiple weekly/per-session files. No raw or unsanitized data — only the scrubbed export.
-
-
-## Privacy & data policy
-
-**All processing is local.** No data is sent anywhere unless you explicitly share the output file.
-
-### Two-level privacy model
-
-**Level 1 — Workspace filtering:** Public GitHub repos with recognized OSS licenses are auto-included. Private repos, unlicensed projects, and non-GitHub repos are excluded by default. If no public repos qualify, you'll be prompted to select private workspaces manually. Use `--allowed-orgs` to restrict collection to specific GitHub orgs (e.g. for a pilot program).
-
-**Level 2 — Content sanitization:** The export is automatically scrubbed using deterministic pattern matching. Redacted patterns include:
-- API keys and tokens (AWS, GitHub, Anthropic, OpenAI, Slack, Stripe, etc.)
-- Email addresses
-- Private IP addresses
-- Home directory paths (replaced with `~`)
-- SSH keys, connection strings, passwords, bearer tokens
-- `.env` file secrets
-
-A summary of what was redacted is printed after collection.
-
-### Additional guarantees
-- **No telemetry, no auto-sync.** No background uploads, no analytics.
-- **Network calls:** Only `gh` (GitHub CLI) during classification, and only for repos that have a GitHub remote.
-- **You control what's shared.** Review `dist/skillbench_export_sanitized.json` before uploading.
-
-### Agent fidelity
-
-Full session fidelity (complete tool payloads, code diffs, command outputs) is currently supported for **Claude Code** sessions. Other agents (Gemini CLI, Codex CLI) are included with summary-level data (messages and metadata, tool blocks stubbed).
-
-## What is this?
-
-A local CLI tool that scans your coding agent session logs and lets you:
-1. Browse indexed sessions across multiple AI coding agents
-2. Auto-classify projects by git visibility + OSS license
-3. Compute agentic engineering metrics locally
-4. Export and sanitize session data for SkillBench analysis
-
-## How the `collect` command works
-
-The unified `collect` pipeline enforces a **two-level privacy model**: Level 1 filters *which projects* are included (workspace classification), and Level 2 filters *what content* is safe to share (automatic sanitization). Both levels run entirely on your machine.
-
-### Step 1: Scan for sessions
-
-Reads local log files directly from known agent directories:
-- Claude Code: `~/.claude/projects/`
-- Gemini CLI: `~/.gemini/tmp/`
-- Codex CLI: standard log locations
-
-No external dependencies needed — no CASS, no Rust toolchain.
-
-### Step 2: Classify workspaces
-
-For each workspace with sessions:
-
-1. **Skip filtering.** Drops macOS temp dirs, Cursor internal dirs, git worktrees, bare home directory.
-2. **GitHub classification.** Uses `gh repo view` to check visibility and license. Falls back gracefully if `gh` is not installed.
-3. **Auto-include rule.** A project is included only when it is **public on GitHub** AND has a **recognized OSS license**.
-4. **Interactive prompt.** If no public repos qualify, you're prompted to select private workspaces to include. The prompt shows the detected GitHub org and only offers repos that match the active allowlist.
-
-To restrict collection to specific GitHub orgs (e.g. for a pilot), pass `--allowed-orgs`:
-
-```bash
-skillbench collect --allowed-orgs andela-technology woven-teams woven-reviews
-```
-
-### Step 3: Analyze
-
-Computes agentic engineering metrics across three tiers:
-- **Tier 1 — Usage patterns:** sessions/week, active days, session duration, agent diversity
-- **Tier 2 — Prompting sophistication:** prompt length, context provision rate, multi-step rate
-- **Tier 3 — Iteration efficiency:** first-attempt success, correction rate, avg turns
-
-### Step 4: Export
-
-Exports full conversation data (messages, timestamps, agents) for allowed workspaces. Files are split by ISO week by default (`--split weekly`), producing one file per week (e.g. `skillbench_export_sanitized_2026_W12.json`). Use `--split session` for per-session files, or `--split none` for a single combined file.
-
-### Step 5: Sanitize
-
-Runs the deterministic pattern-based sanitizer automatically. No manual step needed.
-
-## `collect` flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-o, --output` | `dist/skillbench_export_sanitized.json` | Output file path for the sanitized export |
-| `-y, --yes` | off | Skip interactive confirmation prompts |
-| `--split` | `weekly` | How to split export files: `weekly` (one file per ISO week), `session` (one file per session), or `none` (single combined file) |
-| `--include-excluded` | off | Include workspaces from the allowed org scope even if they're private or lack an OSS license (use when no public repos qualify) |
-| `--upload-guide` | off | Print upload instructions at the end of the run |
-| `--allowed-orgs` | all orgs (`*`) | Space-separated list of GitHub orgs to restrict collection to. Omit to collect from all orgs. |
-
-## Advanced: Manual pipeline (CASS-based)
-
-For power users who want fine-grained control, you can run each step separately using the CASS-based workflow:
-
-```bash
-# Prerequisites: install CASS and index your sessions
-cargo install cass
-cass index --full
-
-# Install skillbench
-pip install -e .
-
-# 1. Scan and classify → dist/bootblock.txt
-skillbench scan
-
-# 2. Review/edit dist/bootblock.txt, then compute metrics
-skillbench analyze --json
-
-# 3. Export session data
-skillbench gather
-
-# 4. Sanitize (automated — or use skills/sanitize-export/SKILL.md for AI-driven)
-# The deterministic sanitizer in sanitizer.py handles most cases.
-
-# 5. Upload (not yet implemented)
-# skillbench push
-```
-
-### Gemini CLI note
-
-Gemini CLI sessions are automatically detected and attributed to the correct project via SHA-256 hash resolution of project paths.
-
-## How it fits with skillmeter
-
-This is a **complementary data layer**, not a replacement:
-
-| Layer | Tool | Granularity | What it tells you |
-|-------|------|-------------|-------------------|
-| Keystroke | skillmeter VS Code extension | Character-level | How much AI wrote vs. you |
-| Session | session-collector (this repo) | Conversation-level | How effectively you direct AI |
-
-## Status
-
-See [SPEC.md](./SPEC.md) for the full design.
+- **Using `GH_TOKEN` without installing `gh`:** [docs/gh-token.md](docs/gh-token.md)
+- **Privacy & data policy:** [docs/privacy.md](docs/privacy.md)
+- **Flags, Makefile knobs, step-by-step pipeline, CASS mode:** [docs/details.md](docs/details.md)
+- **Design spec:** [SPEC.md](SPEC.md)
+- **Recent changes:** [commit history](https://github.com/SkillBench-AI/session-collector/commits/main).
