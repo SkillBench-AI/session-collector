@@ -29,6 +29,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 
 # --- CASS database discovery ---
@@ -144,11 +145,56 @@ def get_git_remote_url(folder: str) -> Optional[str]:
     return None
 
 
+def _looks_like_github_host(hostname: Optional[str]) -> bool:
+    """Best-effort match for GitHub hosts, including SSH aliases."""
+    if not hostname:
+        return False
+
+    host = hostname.lower()
+
+    # Exact match or subdomain of github.com
+    if host == "github.com" or host.endswith(".github.com"):
+        return True
+
+    # Check if "github" appears as a full DNS label or in GitHub-related patterns
+    # Split into labels and check each one
+    labels = host.split(".")
+    for label in labels:
+        # Match "github" as a complete label
+        if label == "github":
+            return True
+        # Match labels like "github-enterprise" or "my-github"
+        if label.startswith("github-") or label.endswith("-github"):
+            return True
+
+    return False
+
+
 def extract_github_owner_repo(remote_url: str) -> Optional[str]:
     """Extract owner/repo from a GitHub remote URL, or None."""
-    match = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$", remote_url)
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
+    host = None
+    path = None
+
+    if "://" in remote_url:
+        parsed = urlparse(remote_url)
+        host = parsed.hostname
+        path = parsed.path
+    else:
+        match = re.match(r"(?:(?:[^@]+)@)?([^:]+):(.+)$", remote_url)
+        if match:
+            host = match.group(1)
+            path = match.group(2)
+
+    if not _looks_like_github_host(host):
+        return None
+
+    parts = [part for part in (path or "").strip("/").split("/") if part]
+    if len(parts) >= 2:
+        repo = parts[1]
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        if parts[0] and repo:
+            return f"{parts[0]}/{repo}"
     return None
 
 
@@ -296,10 +342,9 @@ def generate_bootblock(workspaces: List[Dict], output_path: str = "bootblock.txt
         lines.append("# AUTO-INCLUDED (public repo + OSS license):")
         for w in included:
             remote_note = ""
-            if w["git_remote"] and "github.com" in w["git_remote"]:
-                owner_repo = extract_github_owner_repo(w["git_remote"])
-                if owner_repo:
-                    remote_note = f", {owner_repo}"
+            owner_repo = extract_github_owner_repo(w["git_remote"]) if w["git_remote"] else None
+            if owner_repo:
+                remote_note = f", {owner_repo}"
             path_str = _format_path_for_bootblock(w["path"])
             lines.append(f"{path_str}    # {w['license_type']}{remote_note}")
         lines.append("")

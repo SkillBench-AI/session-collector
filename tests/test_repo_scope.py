@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import skillbench
+import skillbench.bootblock as bootblock
 
 
 def test_extract_github_org_from_remote_handles_github_urls():
@@ -54,6 +55,45 @@ def test_extract_github_org_from_remote_handles_github_urls():
         )
         == "andela-technology"
     )
+
+
+def test_bootblock_extract_github_owner_repo_handles_multi_account_aliases():
+    assert (
+        bootblock.extract_github_owner_repo(
+            "git@github.com-andela:andela-technology/andela.git"
+        )
+        == "andela-technology/andela"
+    )
+    assert (
+        bootblock.extract_github_owner_repo(
+            "git@github-andela:Andela-Technology/platform.git"
+        )
+        == "Andela-Technology/platform"
+    )
+    assert (
+        bootblock.extract_github_owner_repo(
+            "https://gitlab.com/andela/platform.git"
+        )
+        is None
+    )
+
+
+def test_generate_bootblock_includes_alias_based_github_repo_note(tmp_path):
+    output = tmp_path / "bootblock.txt"
+    workspaces = [
+        {
+            "path": str(tmp_path / "repo"),
+            "git_remote": "git@github.com-andela:Andela-Technology/platform.git",
+            "license_type": "MIT",
+            "auto_include": True,
+            "reason": "",
+        }
+    ]
+
+    bootblock.generate_bootblock(workspaces, str(output))
+
+    contents = output.read_text()
+    assert "MIT, Andela-Technology/platform" in contents
 
 
 def test_get_repo_scope_decision_matches_allowed_orgs():
