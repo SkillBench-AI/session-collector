@@ -151,15 +151,23 @@ def _looks_like_github_host(hostname: Optional[str]) -> bool:
         return False
 
     host = hostname.lower()
-    return (
-        host == "github.com"
-        or host.endswith(".github.com")
-        or host.startswith("github")
-        or ".github." in host
-        or ".github-" in host
-        or host.endswith("-github")
-        or host.startswith("github-")
-    )
+
+    # Exact match or subdomain of github.com
+    if host == "github.com" or host.endswith(".github.com"):
+        return True
+
+    # Check if "github" appears as a full DNS label or in GitHub-related patterns
+    # Split into labels and check each one
+    labels = host.split(".")
+    for label in labels:
+        # Match "github" as a complete label
+        if label == "github":
+            return True
+        # Match labels like "github-enterprise" or "my-github"
+        if label.startswith("github-") or label.endswith("-github"):
+            return True
+
+    return False
 
 
 def extract_github_owner_repo(remote_url: str) -> Optional[str]:
