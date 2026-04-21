@@ -283,6 +283,225 @@ def test_collect_prompt_displays_git_remote_org_for_selectable_workspaces(capsys
     assert "outside allowed orgs (someone)" in output
 
 
+def test_select_workspaces_can_skip_extras_when_allowed():
+    selectable = [
+        {
+            "path": "/tmp/repo",
+            "remote_org": "skillbench-ai",
+            "conversations": 3,
+        }
+    ]
+
+    with patch.object(skillbench, "_check_gh_once", return_value=True), patch.object(
+        skillbench, "_tty_input", return_value="s"
+    ):
+        assert (
+            skillbench._select_workspaces(
+                selectable,
+                scope_label="skillbench-ai",
+                title="Select additional workspaces to include",
+                headline="Additional approved-scope workspaces are available.",
+                summary="1 workspace is eligible for optional inclusion before export.",
+                allow_empty=True,
+            )
+            == []
+        )
+
+
+def test_collect_include_excluded_prompts_for_extra_selection_even_with_auto_includes(
+    tmp_path,
+):
+    included_path = tmp_path / "public-oss"
+    selectable_path = tmp_path / "private-no-license"
+    included_path.mkdir()
+    selectable_path.mkdir()
+
+    class FakeConversation:
+        def __init__(self, workspace: str):
+            self.workspace = workspace
+
+        def to_dict(self):
+            return {
+                "session_id": f"session-{Path(self.workspace).name}",
+                "agent": "claude_code",
+                "workspace": self.workspace,
+                "git_remote": None,
+                "source_path": None,
+                "started_at": 0,
+                "ended_at": 0,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "test",
+                        "created_at": "2026-04-01T00:00:00+00:00",
+                    }
+                ],
+            }
+
+    class FakeScanner:
+        selected_paths = None
+
+        def __init__(self):
+            self.conversations = [object()]
+
+        def scan_all(self, verbose=True):
+            return None
+
+        def resolve_gemini_hashes(self):
+            return 0
+
+        def get_workspace_summary(self):
+            return [
+                {
+                    "workspace": str(included_path),
+                    "agents": ["claude_code"],
+                    "total_conversations": 1,
+                    "total_user_messages": 2,
+                },
+                {
+                    "workspace": str(selectable_path),
+                    "agents": ["claude_code"],
+                    "total_conversations": 1,
+                    "total_user_messages": 2,
+                },
+            ]
+
+        def get_conversations_for_workspaces(self, allowed_paths):
+            FakeScanner.selected_paths = list(allowed_paths)
+            return [FakeConversation(path) for path in allowed_paths]
+
+    class FakeSanitizer:
+        def sanitize_export(self, export_data):
+            return export_data
+
+        def print_stats(self):
+            return None
+
+    def fake_git_remote(path):
+        if path == str(included_path):
+            return "git@github.com:skillbench-ai/public-oss.git"
+        if path == str(selectable_path):
+            return "git@github.com:skillbench-ai/private-no-license.git"
+        return None
+
+    def fake_gh(remote):
+        if remote and remote.endswith("public-oss.git"):
+            return {"is_public": True, "license_key": "mit", "license_name": "MIT"}
+        return {"is_public": False, "license_key": None, "license_name": None}
+
+    metrics = {
+        "tier1": {
+            "total_conversations": 2,
+            "total_user_messages": 2,
+            "sessions_per_week": 2.0,
+            "active_days_per_week": 1.0,
+            "agents_used": ["claude_code"],
+        },
+        "tier2": {
+            "avg_prompt_length": 10,
+            "context_provision_rate": 0.5,
+            "multi_step_rate": 0.5,
+        },
+        "tier3": {
+            "first_attempt_success_rate": 0.5,
+            "correction_rate": 0.1,
+            "avg_turns_per_session": 2.0,
+        },
+        "_raw": {
+            "sessions_per_week": 2.0,
+            "avg_prompt_length": 10,
+            "context_provision_rate": 0.5,
+            "first_attempt_success_rate": 0.5,
+            "correction_rate": 0.1,
+            "multi_step_rate": 0.5,
+        },
+        "date_range": {"start": "2026-04-01", "end": "2026-04-07", "span_days": 6},
+        "score": 50,
+        "level": "L3",
+        "level_name": "Practitioner",
+    }
+
+    fake_session_parser = SimpleNamespace(SessionScanner=FakeScanner)
+    dist_dir = tmp_path / "dist"
+    bootblock = dist_dir / "bootblock.txt"
+    selected_calls = []
+
+    def fake_select(selectable, scope_label, **kwargs):
+        selected_calls.append(
+            {
+                "paths": [e["path"] for e in selectable],
+                "scope_label": scope_label,
+                "kwargs": kwargs,
+            }
+        )
+        return [str(selectable_path)]
+
+    with patch.dict(
+        sys.modules,
+        {
+            "skillbench.session_parser": fake_session_parser,
+            "skillbench.sanitizer": SimpleNamespace(Sanitizer=FakeSanitizer),
+        },
+    ), patch.object(skillbench, "git_remote_url", side_effect=fake_git_remote), patch.object(
+        skillbench,
+        "is_skippable",
+        return_value=False,
+    ), patch.object(
+        skillbench,
+        "classify_github_repo",
+        side_effect=fake_gh,
+    ), patch.object(
+        skillbench,
+        "_compute_metrics",
+        return_value=metrics,
+    ), patch.object(
+        skillbench,
+        "identify_strengths_and_edges",
+        return_value=([], []),
+    ), patch.object(
+        skillbench,
+        "_select_workspaces",
+        side_effect=fake_select,
+    ), patch.object(
+        skillbench,
+        "_tty_input",
+        return_value="y",
+    ), patch.object(
+        skillbench,
+        "DIST_DIR",
+        dist_dir,
+    ), patch.object(
+        skillbench,
+        "BOOTBLOCK_FILE",
+        bootblock,
+    ):
+        args = Namespace(
+            output=str(tmp_path / "export.json"),
+            yes=False,
+            include_excluded=True,
+            allowed_orgs=["skillbench-ai"],
+            split="weekly",
+            write_report=False,
+            upload_guide=False,
+        )
+        skillbench.cmd_collect(args)
+
+    assert FakeScanner.selected_paths == [str(included_path), str(selectable_path)]
+    assert selected_calls == [
+        {
+            "paths": [str(selectable_path)],
+            "scope_label": "skillbench-ai",
+            "kwargs": {
+                "title": "Select additional workspaces to include",
+                "headline": "Additional approved-scope workspaces are available.",
+                "summary": "1 workspace(s) are eligible for optional inclusion before export.",
+                "allow_empty": True,
+            },
+        }
+    ]
+    assert bootblock.read_text().count(str(selectable_path)) == 1
+
+
 def test_git_remote_url_falls_back_to_non_origin_github_remote(tmp_path):
     repo = tmp_path / "repo"
     git_dir = repo / ".git"

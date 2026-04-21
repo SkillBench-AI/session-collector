@@ -1769,7 +1769,15 @@ def _tty_input(prompt: str) -> str:
         return input(prompt)
 
 
-def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
+def _select_workspaces(
+    selectable: list[dict],
+    scope_label: str,
+    *,
+    title: str = "Select private workspaces to include",
+    headline: str = "No auto-includable (public + OSS) workspaces in scope.",
+    summary: str | None = None,
+    allow_empty: bool = False,
+) -> list[str]:
     """Show an interactive picker for private/unlicensed workspaces.
 
     Uses ``questionary`` (arrow keys / spacebar / enter) when available, and
@@ -1802,9 +1810,12 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
 
     print()
     print()
+    if summary is None:
+        summary = f"{len(selectable)} private workspace(s) eligible for manual selection."
+
     print(f"{y}{bar}{r}")
-    print(f"{y}  No auto-includable (public + OSS) workspaces in scope.{r}")
-    print(f"{y}  {len(selectable)} private workspace(s) eligible for manual selection.{r}")
+    print(f"{y}  {headline}{r}")
+    print(f"{y}  {summary}{r}")
     print(f"{y}{r}")
     print(f"{y}  Scope: {scope_label}{r}")
     print(f"{y}  Sessions are PII-scrubbed; source code is never collected.{r}")
@@ -1878,7 +1889,7 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
                 # brittle across versions. Ctrl-C is the terminal-wide
                 # standard and works reliably.
                 selected = questionary.checkbox(
-                    "Select private workspaces to include",
+                    title,
                     choices=choices,
                     instruction=(
                         "  (space: toggle · a: toggle all · enter: confirm · Ctrl-C: cancel)"
@@ -1888,6 +1899,9 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
                     print("Aborted.")
                     sys.exit(0)
                 if not selected:
+                    if allow_empty:
+                        print("No additional workspaces selected.")
+                        return []
                     print("No workspaces selected. Aborted.")
                     sys.exit(0)
                 print(f"Including {len(selected)} workspace(s).")
@@ -1899,12 +1913,15 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
     # No screen clear here either: scroll-back of the [1/5]/[2/5] logs is how
     # users (and support) figure out why auto-include landed on 0.
     # (Header was printed earlier, before the Proceed? confirmation.)
-    print("Select private workspaces to include:")
+    print(f"{title}:")
     for i, e in enumerate(selectable):
         convs = e.get("conversations", "?")
         org = e["remote_org"] or "not detected"
         print(f"  [{i+1}] {e['path']}  — {convs} sessions, org: {org}")
-    print("  [a] all    [n] cancel")
+    if allow_empty:
+        print("  [a] all    [s] skip extras    [n] cancel")
+    else:
+        print("  [a] all    [n] cancel")
     try:
         response = _tty_input("> ").strip().lower()
     except KeyboardInterrupt:
@@ -1926,6 +1943,9 @@ def _select_workspaces(selectable: list[dict], scope_label: str) -> list[str]:
         paths = [e["path"] for e in selectable]
         print(f"Including all {len(paths)} workspaces.")
         return paths
+    if allow_empty and response in ("s", "skip", "none"):
+        print("No additional workspaces selected.")
+        return []
     try:
         indices = [int(x.strip()) - 1 for x in response.split(",")]
     except ValueError:
@@ -2030,10 +2050,25 @@ def cmd_collect(args):
     include_excluded = getattr(args, "include_excluded", False)
     allowed_paths = [e["path"] for e in included]
 
-    if not allowed_paths and include_excluded:
-        # Explicit opt-in: proceed with approved-org workspaces that were excluded
-        # for privacy/license reasons, but never repos outside the allowlist.
-        allowed_paths = [e["path"] for e in (included + selectable_excluded)]
+    if include_excluded and selectable_excluded:
+        if getattr(args, "yes", False):
+            # Headless runs cannot prompt, so preserve the old "include
+            # everything in approved scope" behavior.
+            allowed_paths.extend(e["path"] for e in selectable_excluded)
+        else:
+            allowed_paths.extend(
+                _select_workspaces(
+                    selectable_excluded,
+                    scope_label=format_allowed_orgs(allowed_orgs),
+                    title="Select additional workspaces to include",
+                    headline="Additional approved-scope workspaces are available.",
+                    summary=(
+                        f"{len(selectable_excluded)} workspace(s) are eligible for "
+                        "optional inclusion before export."
+                    ),
+                    allow_empty=bool(included),
+                )
+            )
 
     if not allowed_paths:
         if selectable_excluded and not getattr(args, "yes", False):
