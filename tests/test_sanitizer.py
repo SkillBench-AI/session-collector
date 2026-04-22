@@ -8,8 +8,9 @@ from skillbench.sanitizer import Sanitizer  # noqa: E402
 
 def test_sanitizer_recursively_redacts_nested_tool_blocks():
     sanitizer = Sanitizer()
+    home = str(Path.home())
     session = {
-        "workspace": "/Users/john/project",
+        "workspace": f"{home}/project",
         "messages": [
             {
                 "role": "assistant",
@@ -18,7 +19,7 @@ def test_sanitizer_recursively_redacts_nested_tool_blocks():
                         "type": "tool_use",
                         "name": "write_file",
                         "input": {
-                            "path": "/Users/john/project/.env",
+                            "path": f"{home}/project/.env",
                             "content": "OPENAI_API_KEY=sk-12345678901234567890",
                         },
                     },
@@ -27,7 +28,7 @@ def test_sanitizer_recursively_redacts_nested_tool_blocks():
                         "tool_use_id": "call_1",
                         "content": [
                             {
-                                "text": "Saved file for john@example.com at /Users/john/project/.env"
+                                "text": f"Saved file for john@example.com at {home}/project/.env"
                             }
                         ],
                         "is_error": False,
