@@ -5,7 +5,7 @@ from __future__ import annotations
 Reads session data directly from local agent log files:
   - Claude Code:  ~/.claude/projects/*/session-*.jsonl
   - Gemini CLI:   ~/.gemini/tmp/{sha256(path)}/chats/*.json
-  - Codex CLI:    ~/.codex/sessions/*.jsonl  (TBD — format needs verification)
+  - Codex CLI:    ~/.codex/sessions/*.jsonl
 
 Normalizes into a common schema compatible with the existing skillbench.py
 metrics pipeline. No Rust, no CASS, no cargo install — pure Python.
@@ -29,9 +29,9 @@ class Message:
     """A single message in a conversation."""
     __slots__ = ("role", "content", "timestamp")
 
-    def __init__(self, role: str, content: str, timestamp: float | None = None):
+    def __init__(self, role: str, content, timestamp: float | None = None):
         self.role = role          # "user", "assistant", "tool"
-        self.content = content    # text content
+        self.content = content    # text or structured content blocks
         self.timestamp = timestamp  # epoch milliseconds (or None)
 
     def to_dict(self) -> dict:
@@ -379,14 +379,119 @@ def _parse_single_gemini_session(
 # Codex CLI parser (OpenAI Codex / ChatGPT CLI)
 # ---------------------------------------------------------------------------
 
+def _parse_timestamp_ms(value) -> int | None:
+    """Normalize various timestamp formats to epoch milliseconds."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value * 1000) if value < 1e12 else int(value)
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _normalize_codex_content_blocks(content, *, thinking: str | None = None) -> list[dict]:
+    """Normalize Codex content into Claude-style structured blocks."""
+    blocks: list[dict] = []
+
+    if thinking:
+        blocks.append({"type": "thinking", "thinking": thinking})
+
+    if isinstance(content, str):
+        if content:
+            blocks.append({"type": "text", "text": content})
+        return blocks
+
+    if not isinstance(content, list):
+        return blocks
+
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                blocks.append({"type": "text", "text": block})
+            continue
+        if not isinstance(block, dict):
+            continue
+
+        block_type = block.get("type", "")
+        if block_type in ("input_text", "text", "output_text"):
+            blocks.append({"type": "text", "text": block.get("text", "")})
+        elif block_type == "tool_use":
+            blocks.append({
+                "type": "tool_use",
+                "id": block.get("id", ""),
+                "name": block.get("name", ""),
+                "input": block.get("input", {}),
+            })
+        elif block_type == "tool_result":
+            blocks.append({
+                "type": "tool_result",
+                "tool_use_id": block.get("tool_use_id", ""),
+                "content": block.get("content", ""),
+                "is_error": block.get("is_error", False),
+            })
+        else:
+            blocks.append(block)
+
+    return blocks
+
+
+def _extract_apply_patch_path(patch_text: str) -> str | None:
+    """Best-effort path extraction from an apply_patch payload."""
+    if not patch_text:
+        return None
+    match = re.search(r"^\*\*\* (?:Add|Update) File: (.+)$", patch_text, re.MULTILINE)
+    return match.group(1).strip() if match else None
+
+
+def _normalize_codex_tool_input(name: str, raw_input):
+    """Normalize tool-call inputs from live Codex event records."""
+    if isinstance(raw_input, dict):
+        return raw_input
+
+    if isinstance(raw_input, str):
+        try:
+            parsed = json.loads(raw_input)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        if name == "apply_patch":
+            path = _extract_apply_patch_path(raw_input)
+            result = {"patch": raw_input}
+            if path:
+                result["path"] = path
+            return result
+
+        return {"input": raw_input}
+
+    return {}
+
+
+def _build_codex_tool_result(content, *, is_error: bool = False, metadata: dict | None = None) -> dict:
+    """Build a normalized tool_result block."""
+    block = {
+        "type": "tool_result",
+        "content": content,
+        "is_error": is_error,
+    }
+    if metadata:
+        block["metadata"] = metadata
+    return block
+
 def parse_codex_sessions(
     base_dir: Path | None = None,
 ) -> Iterator[Conversation]:
     """Parse Codex CLI session files.
 
-    Codex CLI stores sessions as JSONL in ~/.codex/ or similar.
-    Format TBD — this is a stub to be filled in once we verify
-    the actual file format from Chris's data.
+    Codex CLI stores sessions as JSONL in ~/.codex/ or similar. The primary
+    on-disk format is a stream of envelope events such as ``session_meta``,
+    ``response_item``, and ``event_msg``.
 
     Yields Conversation objects.
     """
@@ -422,9 +527,14 @@ def parse_codex_sessions(
 
 
 def _parse_codex_jsonl(filepath: Path) -> Conversation | None:
-    """Parse a Codex JSONL session file (similar format to Claude Code)."""
+    """Parse a Codex JSONL session file."""
     messages = []
     timestamps = []
+    session_id = filepath.stem
+    workspace = None
+    git_remote = None
+    pending_thinking = None
+    pending_calls: dict[str, dict] = {}
 
     with open(filepath, "r", errors="replace") as f:
         for line in f:
@@ -436,41 +546,186 @@ def _parse_codex_jsonl(filepath: Path) -> Conversation | None:
             except json.JSONDecodeError:
                 continue
 
-            role = entry.get("role") or entry.get("message", {}).get("role")
-            content = entry.get("content") or entry.get("message", {}).get("content", "")
-            if isinstance(content, list):
-                content = "\n".join(
-                    b.get("text", "") for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                )
-
-            if not role or not content:
+            evt_type = entry.get("type")
+            if evt_type == "session_meta":
+                payload = entry.get("payload", {})
+                meta_session_id = payload.get("id")
+                meta_workspace = payload.get("cwd")
+                meta_git = payload.get("git", {})
+                if meta_session_id:
+                    session_id = str(meta_session_id)
+                if meta_workspace:
+                    workspace = str(meta_workspace)
+                if isinstance(meta_git, dict) and meta_git.get("repository_url"):
+                    git_remote = str(meta_git["repository_url"])
                 continue
 
-            ts_ms = None
-            ts = entry.get("timestamp") or entry.get("created_at")
-            if ts:
-                if isinstance(ts, (int, float)):
-                    ts_ms = int(ts * 1000) if ts < 1e12 else int(ts)
-                elif isinstance(ts, str):
-                    try:
-                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                        ts_ms = int(dt.timestamp() * 1000)
-                    except (ValueError, TypeError):
-                        pass
-                if ts_ms:
+            if evt_type == "event_msg":
+                payload = entry.get("payload", {})
+                payload_type = payload.get("type")
+                if payload_type == "agent_reasoning":
+                    pending_thinking = payload.get("text", "")
+                    continue
+
+                call_id = payload.get("call_id")
+                pending = pending_calls.get(call_id) if call_id else None
+                if pending is None:
+                    continue
+
+                if payload_type == "exec_command_end":
+                    result_block = _build_codex_tool_result(
+                        payload.get("aggregated_output")
+                        or payload.get("formatted_output")
+                        or payload.get("stderr")
+                        or payload.get("stdout")
+                        or "",
+                        is_error=(payload.get("exit_code", 0) != 0),
+                        metadata={
+                            "command": payload.get("command"),
+                            "cwd": payload.get("cwd"),
+                            "exit_code": payload.get("exit_code"),
+                        },
+                    )
+                    pending["result"] = result_block
+                elif payload_type == "patch_apply_end":
+                    result_block = _build_codex_tool_result(
+                        payload.get("stdout") or payload.get("stderr") or "",
+                        is_error=not payload.get("success", False),
+                        metadata={
+                            "changes": payload.get("changes"),
+                            "stderr": payload.get("stderr"),
+                            "success": payload.get("success"),
+                        },
+                    )
+                    pending["result"] = result_block
+                continue
+
+            if evt_type == "response_item":
+                payload = entry.get("payload", {})
+                payload_type = payload.get("type")
+
+                if payload_type == "function_call":
+                    call_id = payload.get("call_id", "")
+                    tool_name = payload.get("name", "")
+                    tool_input = _normalize_codex_tool_input(
+                        tool_name,
+                        payload.get("arguments", {}),
+                    )
+                    block = {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": tool_name,
+                        "input": tool_input,
+                    }
+                    ts_ms = _parse_timestamp_ms(entry.get("timestamp"))
+                    if ts_ms is not None:
+                        timestamps.append(ts_ms)
+                    msg = Message(role="assistant", content=[block], timestamp=ts_ms)
+                    messages.append(msg)
+                    if call_id:
+                        pending_calls[call_id] = {"message": msg, "result": None}
+                    continue
+
+                if payload.get("type") == "custom_tool_call":
+                    call_id = payload.get("call_id", "")
+                    tool_name = payload.get("name", "")
+                    tool_input = _normalize_codex_tool_input(
+                        tool_name,
+                        payload.get("input", {}),
+                    )
+                    block = {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": tool_name,
+                        "input": tool_input,
+                    }
+                    ts_ms = _parse_timestamp_ms(entry.get("timestamp"))
+                    if ts_ms is not None:
+                        timestamps.append(ts_ms)
+                    msg = Message(role="assistant", content=[block], timestamp=ts_ms)
+                    messages.append(msg)
+                    if call_id:
+                        pending_calls[call_id] = {"message": msg, "result": None}
+                    continue
+
+                if payload_type == "function_call_output":
+                    call_id = payload.get("call_id", "")
+                    pending = pending_calls.get(call_id)
+                    if pending is not None and pending["result"] is None:
+                        pending["result"] = _build_codex_tool_result(
+                            payload.get("output", ""),
+                            is_error=False,
+                        )
+                    continue
+
+                if payload_type == "custom_tool_call_output":
+                    call_id = payload.get("call_id", "")
+                    pending = pending_calls.get(call_id)
+                    if pending is not None and pending["result"] is None:
+                        pending["result"] = _build_codex_tool_result(
+                            payload.get("output", ""),
+                            is_error=False,
+                        )
+                    continue
+
+                if payload_type == "reasoning":
+                    summary = payload.get("summary")
+                    if isinstance(summary, list) and summary:
+                        pending_thinking = "\n".join(str(item) for item in summary if item)
+                    continue
+
+                role = payload.get("role", "")
+                if role not in ("user", "assistant"):
+                    continue
+                content = _normalize_codex_content_blocks(
+                    payload.get("content", []),
+                    thinking=pending_thinking if role == "assistant" else None,
+                )
+                if role == "assistant":
+                    pending_thinking = None
+                if not content:
+                    continue
+
+                ts_ms = _parse_timestamp_ms(
+                    entry.get("timestamp") or payload.get("created_at")
+                )
+                if ts_ms is not None:
                     timestamps.append(ts_ms)
 
+                messages.append(Message(role=role, content=content, timestamp=ts_ms))
+                continue
+
+            # Fallback for older/simple JSONL shapes.
+            role = entry.get("role") or entry.get("message", {}).get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = _normalize_codex_content_blocks(
+                entry.get("content") or entry.get("message", {}).get("content", "")
+            )
+            if not content:
+                continue
+
+            ts_ms = _parse_timestamp_ms(entry.get("timestamp") or entry.get("created_at"))
+            if ts_ms is not None:
+                timestamps.append(ts_ms)
+
             messages.append(Message(role=role, content=content, timestamp=ts_ms))
+
+    for pending in pending_calls.values():
+        if pending["result"] is not None:
+            pending["message"].content.append({
+                "tool_use_id": pending["message"].content[0].get("id", ""),
+                **pending["result"],
+            })
 
     if not messages:
         return None
 
-    workspace = str(filepath.parent)
     return Conversation(
-        session_id=filepath.stem,
+        session_id=session_id,
         agent="codex",
-        workspace=workspace,
+        workspace=workspace or str(filepath.parent),
+        git_remote=git_remote,
         started_at=min(timestamps) if timestamps else None,
         ended_at=max(timestamps) if timestamps else None,
         messages=messages,
@@ -497,28 +752,13 @@ def _parse_codex_json(filepath: Path) -> Conversation | None:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role", "")
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            content = "\n".join(
-                b.get("text", "") for b in content
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-        if not role or not content:
+        content = _normalize_codex_content_blocks(msg.get("content", ""))
+        if role not in ("user", "assistant") or not content:
             continue
 
-        ts_ms = None
-        ts = msg.get("timestamp") or msg.get("created_at")
-        if ts:
-            if isinstance(ts, (int, float)):
-                ts_ms = int(ts * 1000) if ts < 1e12 else int(ts)
-            elif isinstance(ts, str):
-                try:
-                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    ts_ms = int(dt.timestamp() * 1000)
-                except (ValueError, TypeError):
-                    pass
-            if ts_ms:
-                timestamps.append(ts_ms)
+        ts_ms = _parse_timestamp_ms(msg.get("timestamp") or msg.get("created_at"))
+        if ts_ms is not None:
+            timestamps.append(ts_ms)
 
         messages.append(Message(role=role, content=content, timestamp=ts_ms))
 
@@ -629,6 +869,7 @@ class SessionScanner:
 
             summaries.append({
                 "workspace": ws_path,
+                "git_remote": next((c.git_remote for c in convs if c.git_remote), None),
                 "agents": agents,
                 "total_conversations": len(convs),
                 "total_user_messages": user_msg_count,
