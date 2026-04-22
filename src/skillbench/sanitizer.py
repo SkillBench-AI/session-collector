@@ -176,26 +176,22 @@ class Sanitizer:
         """Sanitize a single message dict (in-place compatible but returns new dict)."""
         result = dict(message)
         if "content" in result:
-            if isinstance(result["content"], str):
-                result["content"] = self.sanitize_text(result["content"])
-            elif isinstance(result["content"], list):
-                result["content"] = [
-                    self._sanitize_content_block(block)
-                    for block in result["content"]
-                ]
+            result["content"] = self._sanitize_value(result["content"])
         return result
 
     def _sanitize_content_block(self, block) -> dict | str:
         """Sanitize a content block (text, tool_result, etc.)."""
-        if isinstance(block, str):
-            return self.sanitize_text(block)
-        if isinstance(block, dict):
-            result = dict(block)
-            for key in ("text", "content"):
-                if key in result and isinstance(result[key], str):
-                    result[key] = self.sanitize_text(result[key])
-            return result
-        return block
+        return self._sanitize_value(block)
+
+    def _sanitize_value(self, value):
+        """Recursively sanitize nested strings inside dict/list structures."""
+        if isinstance(value, str):
+            return self.sanitize_text(value)
+        if isinstance(value, list):
+            return [self._sanitize_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self._sanitize_value(item) for key, item in value.items()}
+        return value
 
     def sanitize_session(self, session: dict) -> dict:
         """Sanitize a full session dict."""

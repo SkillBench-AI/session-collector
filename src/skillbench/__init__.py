@@ -607,7 +607,7 @@ def get_repo_scope_decision(remote_url: str | None, allowed_orgs: list[str]) -> 
 
 def classify_workspace_entry(path: str, info: dict, allowed_orgs: list[str]) -> dict:
     """Build a workspace classification entry used by scan/collect."""
-    remote = git_remote_url(path)
+    remote = git_remote_url(path) or info.get("git_remote")
     gh = classify_github_repo(remote) if remote else None
     repo_scope = get_repo_scope_decision(remote, allowed_orgs)
     # Independent "is this a GitHub URL?" probe — doesn't rely on repo_scope,
@@ -1656,6 +1656,25 @@ def _compute_metrics(conversations) -> dict | None:
                 durations.append(dur_min)
     avg_session_duration = sum(durations) / len(durations) if durations else 0
 
+    def _message_text(content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    block_type = block.get("type")
+                    if block_type == "text":
+                        parts.append(block.get("text", ""))
+                    elif block_type == "tool_result":
+                        result = block.get("content", "")
+                        if isinstance(result, str) and result:
+                            parts.append(result)
+            return "\n".join(part for part in parts if part)
+        return ""
+
     # User messages
     user_messages = []
     msgs_per_conv = defaultdict(int)
@@ -1667,7 +1686,7 @@ def _compute_metrics(conversations) -> dict | None:
 
     total_user_msgs = len(user_messages)
     avg_prompt_length = (
-        sum(len(m.content) for m in user_messages) / total_user_msgs
+        sum(len(_message_text(m.content)) for m in user_messages) / total_user_msgs
         if total_user_msgs else 0
     )
 
@@ -1676,7 +1695,7 @@ def _compute_metrics(conversations) -> dict | None:
         r'(/[\w./-]+\.\w+|```|line \d+|src/|lib/|test/|\.py|\.ts|\.js|\.go|\.rs|\.dart)',
         re.IGNORECASE
     )
-    context_count = sum(1 for m in user_messages if context_indicators.search(m.content or ""))
+    context_count = sum(1 for m in user_messages if context_indicators.search(_message_text(m.content) or ""))
     context_provision_rate = context_count / total_user_msgs if total_user_msgs else 0
 
     # Multi-step rate: sessions with >3 user turns
@@ -1692,7 +1711,7 @@ def _compute_metrics(conversations) -> dict | None:
         r'\b(no[,.]|wrong|incorrect|instead|actually|not what|try again|that\'s not|fix |redo)\b',
         re.IGNORECASE
     )
-    correction_count = sum(1 for m in user_messages if correction_re.search(m.content or ""))
+    correction_count = sum(1 for m in user_messages if correction_re.search(_message_text(m.content) or ""))
     correction_rate = correction_count / total_user_msgs if total_user_msgs else 0
 
     # Average turns
@@ -2198,7 +2217,8 @@ def cmd_collect(args):
     for conv in conversations:
         ws = conv.workspace
         if ws not in remote_cache:
-            remote_cache[ws] = git_remote_url(ws) if Path(ws).is_dir() else None
+            remote = git_remote_url(ws) if Path(ws).is_dir() else None
+            remote_cache[ws] = remote or conv.git_remote
         d = conv.to_dict()
         d["git_remote"] = remote_cache[ws]
         export_data.append(d)
