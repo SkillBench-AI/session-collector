@@ -1,0 +1,7 @@
+{"timestamp":"2026-04-21T13:33:20.019Z","type":"session_meta","payload":{"id":"live-fixture","cwd":"/tmp/project","git":{"repository_url":"git@github.com:skillbench-ai/live-codex.git"}}}
+{"timestamp":"2026-04-21T13:33:21.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Running the command."}]}}
+{"timestamp":"2026-04-21T13:33:22.000Z","type":"response_item","payload":{"type":"function_call","call_id":"call_exec","name":"exec_command","arguments":"{\"cmd\": \"pytest -q\", \"cwd\": \"/tmp/project\"}"}}
+{"timestamp":"2026-04-21T13:33:23.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_exec","output":"fallback output"}}
+{"timestamp":"2026-04-21T13:33:24.000Z","type":"event_msg","payload":{"type":"exec_command_end","call_id":"call_exec","command":["bash","-lc","pytest -q"],"cwd":"/tmp/project","exit_code":0,"aggregated_output":"2 passed"}}
+{"timestamp":"2026-04-21T13:33:25.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch","input":"*** Begin Patch\n*** Update File: /tmp/project/app.py\n@@\n-print('old')\n+print('new')\n*** End Patch\n"}}
+{"timestamp":"2026-04-21T13:33:26.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"call_patch","success":true,"stdout":"Applied patch","stderr":"","changes":{"updated":["/tmp/project/app.py"]}}}

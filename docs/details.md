@@ -24,7 +24,7 @@ Reads local log files directly from known agent directories:
 
 - Claude Code: `~/.claude/projects/`
 - Gemini CLI: `~/.gemini/tmp/`
-- Codex CLI: standard log locations
+- Codex CLI: `~/.codex/`, `~/.codex-cli/`, and `~/.openai-codex/`
 
 No external dependencies needed — no CASS, no Rust toolchain.
 
@@ -67,6 +67,11 @@ workspaces. Files are split by ISO week by default (`--split weekly`),
 producing one file per week (e.g. `skillbench_export_sanitized_2026_W12.json`).
 Use `--split session` for per-session files, or `--split none` for a single
 combined file.
+
+When raw session files are available, full-fidelity export preserves structured
+tool blocks. For Codex, that includes live event-envelope records such as
+function calls, custom tool calls, reasoning blocks, command results, and patch
+apply results.
 
 ### Step 5: Sanitize
 

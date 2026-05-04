@@ -2,6 +2,8 @@
 
 Collect and analyze your AI coding sessions locally. No data leaves your machine until you share the sanitized export.
 
+Supports local session collection from Claude Code, Gemini CLI, and Codex.
+
 ## Prerequisites
 
 Install once, on the host:

@@ -2516,81 +2516,69 @@ def _parse_raw_claude(source_path: str) -> list[dict] | None:
 
 
 def _parse_raw_codex(source_path: str) -> list[dict] | None:
-    """Parse a Codex CLI raw JSONL session file."""
+    """Parse a Codex session file using the richer event-envelope parser."""
     path = Path(source_path)
     if not path.exists():
         return None
     try:
+        from .session_parser import _parse_codex_json, _parse_codex_jsonl
+
+        parser = _parse_codex_jsonl if path.suffix == ".jsonl" else _parse_codex_json
+        conv = parser(path)
+        if conv is None or not conv.messages:
+            return None
+
         messages = []
-        pending_thinking = None
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+        for msg in conv.messages:
+            created_at = (
+                datetime.fromtimestamp(msg.timestamp / 1000, tz=timezone.utc).isoformat()
+                if msg.timestamp is not None
+                else None
+            )
+            role = "agent" if msg.role == "assistant" else msg.role
+            content = msg.content
 
-                evt_type = obj.get("type", "")
+            if isinstance(content, list):
+                processed = []
+                for block in content:
+                    if not isinstance(block, dict):
+                        processed.append(block)
+                        continue
 
-                # agent_reasoning → thinking block (attach to next assistant)
-                if evt_type == "event_msg":
-                    payload = obj.get("payload", {})
-                    if payload.get("type") == "agent_reasoning":
-                        pending_thinking = payload.get("text", "")
-                    continue
+                    block_type = block.get("type", "")
+                    if block_type == "text":
+                        processed.append({
+                            "type": "text",
+                            "text": _resolve_persisted_output(
+                                block.get("text", ""),
+                                source_path,
+                            ),
+                        })
+                    elif block_type == "tool_result":
+                        result_content = block.get("content", "")
+                        if isinstance(result_content, str):
+                            result_content = _resolve_persisted_output(
+                                result_content,
+                                source_path,
+                            )
+                        processed.append({
+                            **block,
+                            "content": result_content,
+                            "is_error": block.get("is_error", False),
+                        })
+                    else:
+                        processed.append(block)
+                content = processed
+            elif isinstance(content, str):
+                content = _resolve_persisted_output(content, source_path)
 
-                if evt_type != "response_item":
-                    continue
+            messages.append({
+                "role": role,
+                "created_at": created_at,
+                "content": content,
+            })
 
-                payload = obj.get("payload", {})
-                role = payload.get("role", "")
-                if role == "assistant":
-                    role = "agent"
-                elif role != "user":
-                    continue
-                timestamp = obj.get("timestamp", "")
-                raw_content = payload.get("content", [])
-
-                blocks = []
-                if pending_thinking and role == "agent":
-                    blocks.append({"type": "thinking", "thinking": pending_thinking})
-                    pending_thinking = None
-
-                if isinstance(raw_content, list):
-                    for block in raw_content:
-                        if not isinstance(block, dict):
-                            continue
-                        bt = block.get("type", "")
-                        if bt == "input_text":
-                            blocks.append({"type": "text", "text": block.get("text", "")})
-                        elif bt == "text":
-                            blocks.append({"type": "text", "text": block.get("text", "")})
-                        elif bt == "tool_use":
-                            blocks.append({
-                                "type": "tool_use",
-                                "id": block.get("id", ""),
-                                "name": block.get("name", ""),
-                                "input": block.get("input", {}),
-                            })
-                        elif bt == "tool_result":
-                            blocks.append({
-                                "type": "tool_result",
-                                "tool_use_id": block.get("tool_use_id", ""),
-                                "content": block.get("content", ""),
-                                "is_error": block.get("is_error", False),
-                            })
-                        else:
-                            blocks.append(block)
-                elif isinstance(raw_content, str):
-                    blocks.append({"type": "text", "text": raw_content})
-
-                content = blocks if blocks else raw_content
-                messages.append({"role": role, "created_at": timestamp, "content": content})
-
-        return messages if messages else None
+        return messages
     except Exception as e:
         print(f"  WARNING: Could not parse {source_path} (codex): {e}")
         return None
