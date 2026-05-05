@@ -28,6 +28,8 @@ AGENTS = {
     "gemini":   "gemini/v031_chat_session.json",
 }
 
+TMP_PROJECT = "/tmp/project"
+
 
 # ---------------------------------------------------------------------------
 # CASS DB builder
@@ -331,6 +333,61 @@ class TestToolBlocks:
         conv = self._get(_gather(env, full=True), "codex")
         blocks = self._all_blocks(conv)
         assert any(b.get("type") == "tool_use" for b in blocks)
+
+    def test_codex_live_events_preserve_tool_results_metadata(self, tmp_path):
+        workspace = str(tmp_path / "projects" / "repo")
+        Path(workspace).mkdir(parents=True)
+
+        db = tmp_path / "agent_search.db"
+        _build_cass_db(
+            db,
+            [{
+                "agent_slug": "codex",
+                "external_id": "e2e-codex-live",
+                "source_path": str(FIXTURES / "codex" / "live_session.jsonl"),
+                "title": "Live Codex fixture",
+            }],
+            workspace,
+        )
+
+        bootblock = tmp_path / "bootblock.txt"
+        bootblock.write_text(f"{workspace}\n")
+        env = {
+            "db": db,
+            "bootblock": bootblock,
+            "workspace": workspace,
+            "tmp": tmp_path,
+        }
+
+        export = _gather(env, full=True)
+        assert len(export) == 1
+
+        conv = export[0]
+        assert conv["full_fidelity"] is True
+        assert [msg["role"] for msg in conv["messages"]] == ["agent", "agent", "agent"]
+        assert conv["messages"][1]["content"] == [
+            {
+                "type": "tool_use",
+                "id": "call_exec",
+                "name": "exec_command",
+                "input": {"cmd": "pytest -q", "cwd": TMP_PROJECT},
+            },
+            {
+                "type": "tool_result",
+                "tool_use_id": "call_exec",
+                "content": "2 passed",
+                "is_error": False,
+                "metadata": {
+                    "command": ["bash", "-lc", "pytest -q"],
+                    "cwd": TMP_PROJECT,
+                    "exit_code": 0,
+                },
+            },
+        ]
+        assert conv["messages"][2]["content"][0]["input"]["path"] == f"{TMP_PROJECT}/app.py"
+        assert conv["messages"][2]["content"][1]["metadata"]["changes"] == {
+            "updated": [f"{TMP_PROJECT}/app.py"]
+        }
 
     def test_pi_agent_has_tool_use(self, env):
         conv = self._get(_gather(env, full=True), "pi_agent")
