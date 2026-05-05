@@ -28,6 +28,8 @@ AGENTS = {
     "gemini":   "gemini/v031_chat_session.json",
 }
 
+TMP_PROJECT = "/tmp/project"
+
 
 # ---------------------------------------------------------------------------
 # CASS DB builder
@@ -368,7 +370,7 @@ class TestToolBlocks:
                 "type": "tool_use",
                 "id": "call_exec",
                 "name": "exec_command",
-                "input": {"cmd": "pytest -q", "cwd": "/tmp/project"},
+                "input": {"cmd": "pytest -q", "cwd": TMP_PROJECT},
             },
             {
                 "type": "tool_result",
@@ -377,14 +379,14 @@ class TestToolBlocks:
                 "is_error": False,
                 "metadata": {
                     "command": ["bash", "-lc", "pytest -q"],
-                    "cwd": "/tmp/project",
+                    "cwd": TMP_PROJECT,
                     "exit_code": 0,
                 },
             },
         ]
-        assert conv["messages"][2]["content"][0]["input"]["path"] == "/tmp/project/app.py"
+        assert conv["messages"][2]["content"][0]["input"]["path"] == f"{TMP_PROJECT}/app.py"
         assert conv["messages"][2]["content"][1]["metadata"]["changes"] == {
-            "updated": ["/tmp/project/app.py"]
+            "updated": [f"{TMP_PROJECT}/app.py"]
         }
 
     def test_pi_agent_has_tool_use(self, env):
