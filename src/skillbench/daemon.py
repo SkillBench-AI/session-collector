@@ -174,10 +174,28 @@ class CodexDaemonStore:
             )
         return "updated" if existing else "inserted"
 
-    def delete_missing(self, existing_paths: set[str]) -> int:
+    def delete_missing(self, existing_paths: set[str], active_roots: list[Path] | None = None) -> int:
         with self.connect() as conn:
             rows = conn.execute("SELECT source_path FROM sessions").fetchall()
-            stale = [row["source_path"] for row in rows if row["source_path"] not in existing_paths]
+            stale = []
+            for row in rows:
+                source_path = row["source_path"]
+                if source_path in existing_paths:
+                    continue
+                # Only delete if path is under one of the active scan roots
+                if active_roots:
+                    try:
+                        resolved_path = Path(source_path).resolve()
+                        resolved_roots = [root.resolve() for root in active_roots]
+                        under_active_root = any(
+                            resolved_path.is_relative_to(root) for root in resolved_roots
+                        )
+                        if not under_active_root:
+                            continue
+                    except (ValueError, OSError):
+                        # Skip paths that can't be resolved
+                        continue
+                stale.append(source_path)
             for source_path in stale:
                 conn.execute("DELETE FROM sessions WHERE source_path = ?", (source_path,))
         return len(stale)
@@ -245,12 +263,24 @@ def ingest_codex_sessions(
     store = CodexDaemonStore(db_path)
     result = IngestResult()
     seen_paths: set[str] = set()
+    active_roots = _candidate_roots(base_dir)
 
     for path in iter_codex_session_files(base_dir):
         result.scanned += 1
         seen_paths.add(str(path))
-        stat_result = path.stat()
-        existing = store.get_session_record(str(path))
+
+        try:
+            stat_result = path.stat()
+        except (OSError, IOError):
+            result.failed += 1
+            continue
+
+        try:
+            existing = store.get_session_record(str(path))
+        except Exception:
+            result.failed += 1
+            continue
+
         if (
             existing is not None
             and existing["file_mtime_ns"] == stat_result.st_mtime_ns
@@ -259,7 +289,12 @@ def ingest_codex_sessions(
             result.unchanged += 1
             continue
 
-        conv = parse_codex_session_file(path)
+        try:
+            conv = parse_codex_session_file(path)
+        except Exception:
+            result.failed += 1
+            continue
+
         if conv is None or not conv.messages:
             result.failed += 1
             continue
@@ -270,7 +305,7 @@ def ingest_codex_sessions(
         else:
             result.updated += 1
 
-    result.removed = store.delete_missing(seen_paths)
+    result.removed = store.delete_missing(seen_paths, active_roots)
     store.set_metadata("last_scan_at", _utc_now())
     return result
 

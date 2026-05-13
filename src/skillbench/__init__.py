@@ -1665,7 +1665,7 @@ def cmd_daemon_export(args):
     result = export_daemon_sessions(
         db_path=Path(args.db),
         output_path=output_path,
-        allowed_orgs=args.allowed_orgs,
+        allowed_orgs=normalize_allowed_orgs(args.allowed_orgs),
         sanitize=not args.raw,
     )
     print(f"Exported {result['session_count']} session(s) to {result['output_path']}")
