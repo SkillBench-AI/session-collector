@@ -99,6 +99,12 @@ step needed.
 | `INCLUDE_EXCLUDED` | `0` | Set `1` to pass `--include-excluded` (opt-in to private/unlicensed). `make docker-collect-all` is a shortcut. |
 | `ALLOW_NO_GH` | `0` | Set `1` to bypass the `gh` preflight check (manual selection only). |
 | `GH_TOKEN` / `GITHUB_TOKEN` | (unset) | If set, skips the preflight `gh auth` check and is forwarded into the container. See [gh-token.md](gh-token.md). |
+| `DAEMON_DB` | (unset) | Optional sqlite path for `make daemon-*` targets. Defaults to the CLI's `~/.skillbench/codex_daemon.sqlite3`. |
+| `DAEMON_BASE_DIR` | (unset) | Optional Codex session root override for `make daemon-scan` / `make daemon-run`. |
+| `DAEMON_INTERVAL` | `30` | Poll interval in seconds for `make daemon-run`. |
+| `DAEMON_ITERATIONS` | (unset) | Optional loop count for `make daemon-run`; unset means run until stopped. |
+| `DAEMON_OUTPUT` | (unset) | Optional output path for `make daemon-export`. |
+| `DAEMON_RAW` | `0` | Set `1` to pass `--raw` to `make daemon-export`. |
 
 ## Codex daemon commands
 
@@ -111,6 +117,15 @@ normalized Codex sessions so you can ingest continuously and export later.
 | `skillbench daemon-run --interval 30` | Poll Codex session files on a fixed interval |
 | `skillbench daemon-status` | Show daemon database path, session count, and last scan timestamps |
 | `skillbench daemon-export` | Export daemon-collected sessions to JSON |
+
+Equivalent local Make targets are available from this checkout:
+
+```bash
+make daemon-scan
+make daemon-run DAEMON_INTERVAL=30
+make daemon-status
+make daemon-export ALLOWED_ORGS="your-company your-username"
+```
 
 Notes:
 

@@ -1,6 +1,8 @@
 SHELL := /bin/bash
 
 IMAGE ?= skillbench-session-collector:local
+PYTHON ?= python3
+SKILLBENCH ?= PYTHONPATH="$(CURDIR)/src" $(PYTHON) -m skillbench
 
 # Compute the right docker interactive flag at RECIPE execution time, not
 # Makefile parse time. `$(shell ...)` is evaluated in a captured subshell.
@@ -28,6 +30,14 @@ YES ?= 0
 # ALLOWED_ORGS may be unset; helper script forwards it only when non-empty.
 ALLOWED_ORGS ?=
 
+# Local Codex daemon knobs.
+DAEMON_DB ?=
+DAEMON_BASE_DIR ?=
+DAEMON_INTERVAL ?= 30
+DAEMON_ITERATIONS ?=
+DAEMON_OUTPUT ?=
+DAEMON_RAW ?= 0
+
 # Fixed mounts for agent session stores (read-only)
 AGENT_MOUNTS := \
 	-v "$(HOME)/.claude:$(CONTAINER_HOME)/.claude:ro" \
@@ -43,7 +53,7 @@ GH_MOUNTS := \
 # Dynamically computed mounts for real workspace folders referenced by sessions
 WORKSPACE_MOUNTS := $(shell python3 scripts/skillbench_docker_mounts.py 2>/dev/null)
 
-.PHONY: docker-build docker-collect docker-collect-all docker-collect-verbose docker-shell preflight-gh preflight-host
+.PHONY: docker-build docker-collect docker-collect-all docker-collect-verbose docker-shell preflight-gh preflight-host daemon-scan daemon-run daemon-status daemon-export
 
 # Preflight: check host tooling that the Docker flow needs.
 #
@@ -145,4 +155,27 @@ docker-shell: docker-build
 		$(WORKSPACE_MOUNTS) \
 		"$(IMAGE)" \
 		sh
+
+daemon-scan:
+	@$(SKILLBENCH) daemon-scan \
+		$(if $(DAEMON_DB),--db "$(DAEMON_DB)") \
+		$(if $(DAEMON_BASE_DIR),--base-dir "$(DAEMON_BASE_DIR)")
+
+daemon-run:
+	@$(SKILLBENCH) daemon-run \
+		--interval "$(DAEMON_INTERVAL)" \
+		$(if $(DAEMON_DB),--db "$(DAEMON_DB)") \
+		$(if $(DAEMON_BASE_DIR),--base-dir "$(DAEMON_BASE_DIR)") \
+		$(if $(DAEMON_ITERATIONS),--iterations "$(DAEMON_ITERATIONS)")
+
+daemon-status:
+	@$(SKILLBENCH) daemon-status \
+		$(if $(DAEMON_DB),--db "$(DAEMON_DB)")
+
+daemon-export:
+	@$(SKILLBENCH) daemon-export \
+		$(if $(DAEMON_DB),--db "$(DAEMON_DB)") \
+		$(if $(DAEMON_OUTPUT),--output "$(DAEMON_OUTPUT)") \
+		$(if $(ALLOWED_ORGS),--allowed-orgs $(ALLOWED_ORGS)) \
+		$(if $(filter 1 true yes,$(DAEMON_RAW)),--raw)
 

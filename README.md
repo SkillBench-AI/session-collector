@@ -85,18 +85,25 @@ One-shot ingest:
 ```bash
 skillbench daemon-scan
 skillbench daemon-status
+# or, from this checkout without installing the CLI:
+make daemon-scan
+make daemon-status
 ```
 
 Polling loop:
 
 ```bash
 skillbench daemon-run --interval 30
+# or:
+make daemon-run DAEMON_INTERVAL=30
 ```
 
 Export the daemon state as a shareable file:
 
 ```bash
 skillbench daemon-export --allowed-orgs your-company your-username
+# or:
+make daemon-export ALLOWED_ORGS="your-company your-username"
 ```
 
 ## Output & upload
