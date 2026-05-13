@@ -74,6 +74,31 @@ skillbench collect                                             # all orgs
 skillbench collect --allowed-orgs your-company your-username   # restrict scope
 ```
 
+## Codex daemon
+
+For continuous local Codex ingestion, `session-collector` also includes a small
+sqlite-backed daemon workflow that reparses Codex session files when they
+change.
+
+One-shot ingest:
+
+```bash
+skillbench daemon-scan
+skillbench daemon-status
+```
+
+Polling loop:
+
+```bash
+skillbench daemon-run --interval 30
+```
+
+Export the daemon state as a shareable file:
+
+```bash
+skillbench daemon-export --allowed-orgs your-company your-username
+```
+
 ## Output & upload
 
 Sanitized weekly exports land in `dist/` on your host

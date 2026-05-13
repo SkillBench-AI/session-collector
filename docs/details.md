@@ -100,6 +100,27 @@ step needed.
 | `ALLOW_NO_GH` | `0` | Set `1` to bypass the `gh` preflight check (manual selection only). |
 | `GH_TOKEN` / `GITHUB_TOKEN` | (unset) | If set, skips the preflight `gh auth` check and is forwarded into the container. See [gh-token.md](gh-token.md). |
 
+## Codex daemon commands
+
+The daemon commands are Codex-specific. They maintain a local sqlite snapshot of
+normalized Codex sessions so you can ingest continuously and export later.
+
+| Command | Purpose |
+|---------|---------|
+| `skillbench daemon-scan` | Scan Codex session files once and update daemon state |
+| `skillbench daemon-run --interval 30` | Poll Codex session files on a fixed interval |
+| `skillbench daemon-status` | Show daemon database path, session count, and last scan timestamps |
+| `skillbench daemon-export` | Export daemon-collected sessions to JSON |
+
+Notes:
+
+- The daemon reparses whole Codex session files when their size or mtime changes.
+- State lives in `~/.skillbench/codex_daemon.sqlite3` by default.
+- `daemon-export` applies the same repo-scope allowlist filtering used elsewhere
+  in the collector.
+- Use `--raw` with `daemon-export` if you need normalized daemon output without
+  sanitization.
+
 ## Advanced: Manual pipeline (CASS-based)
 
 For power users who want fine-grained control, you can run each step

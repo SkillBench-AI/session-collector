@@ -49,7 +49,7 @@ class Conversation:
     """A single coding agent session/conversation."""
     __slots__ = (
         "session_id", "agent", "workspace", "git_remote",
-        "started_at", "ended_at", "messages", "source_path",
+        "started_at", "ended_at", "messages", "source_path", "full_fidelity",
     )
 
     def __init__(
@@ -62,6 +62,7 @@ class Conversation:
         ended_at: float | None = None,
         messages: list[Message] | None = None,
         source_path: str | None = None,
+        full_fidelity: bool = True,
     ):
         self.session_id = session_id
         self.agent = agent            # "claude_code", "gemini", "codex", etc.
@@ -71,6 +72,7 @@ class Conversation:
         self.ended_at = ended_at      # epoch milliseconds
         self.messages = messages or []
         self.source_path = source_path
+        self.full_fidelity = full_fidelity
 
     def to_dict(self) -> dict:
         return {
@@ -82,6 +84,7 @@ class Conversation:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "messages": [m.to_dict() for m in self.messages],
+            "full_fidelity": self.full_fidelity,
         }
 
 
