@@ -13,12 +13,15 @@ metrics pipeline. No Rust, no CASS, no cargo install — pure Python.
 
 import hashlib
 import json
+import logging
 import os
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +520,10 @@ def parse_codex_sessions(
                 conv = _parse_codex_jsonl(filepath)
                 if conv and conv.messages:
                     yield conv
-            except Exception:
+                else:
+                    logger.warning("Skipping Codex JSONL file with no recognized messages: %s", filepath)
+            except Exception as exc:
+                logger.warning("Skipping Codex JSONL file after parse error: %s (%s)", filepath, exc)
                 continue
 
         for filepath in candidate.rglob("*.json"):
@@ -525,7 +531,10 @@ def parse_codex_sessions(
                 conv = _parse_codex_json(filepath)
                 if conv and conv.messages:
                     yield conv
-            except Exception:
+                else:
+                    logger.warning("Skipping Codex JSON file with no recognized messages: %s", filepath)
+            except Exception as exc:
+                logger.warning("Skipping Codex JSON file after parse error: %s (%s)", filepath, exc)
                 continue
 
 
@@ -538,15 +547,20 @@ def _parse_codex_jsonl(filepath: Path) -> Conversation | None:
     git_remote = None
     pending_thinking = None
     pending_calls: dict[str, dict] = {}
+    malformed_lines = 0
+    malformed_line_numbers: list[int] = []
 
     with open(filepath, "r", errors="replace") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
+                malformed_lines += 1
+                if len(malformed_line_numbers) < 5:
+                    malformed_line_numbers.append(line_number)
                 continue
 
             evt_type = entry.get("type")
@@ -720,6 +734,14 @@ def _parse_codex_jsonl(filepath: Path) -> Conversation | None:
                 "tool_use_id": pending["message"].content[0].get("id", ""),
                 **pending["result"],
             })
+
+    if malformed_lines:
+        logger.warning(
+            "Skipped %d malformed Codex JSONL line(s) in %s (first lines: %s)",
+            malformed_lines,
+            filepath,
+            ", ".join(str(n) for n in malformed_line_numbers),
+        )
 
     if not messages:
         return None
