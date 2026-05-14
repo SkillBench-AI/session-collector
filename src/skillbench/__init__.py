@@ -1656,23 +1656,200 @@ def cmd_daemon_status(args):
 def cmd_daemon_export(args):
     """Export sessions from daemon state to a JSON file."""
     from .daemon import export_daemon_sessions
-
-    output_path = (
-        Path(args.output)
-        if args.output
-        else DIST_DIR / "skillbench_daemon_export_sanitized.json"
+    from .codex_workflow import (
+        _print_raw_export_warning,
+        _raw_export_acknowledged,
     )
+
+    sanitize = not args.raw
+    if not sanitize and not _raw_export_acknowledged(args):
+        _print_raw_export_warning()
+        sys.exit(2)
+
+    if args.output:
+        output_path = Path(args.output)
+    elif sanitize:
+        output_path = DIST_DIR / "skillbench_daemon_export_sanitized.json"
+    else:
+        output_path = DIST_DIR / "skillbench_daemon_export.json"
+
     result = export_daemon_sessions(
         db_path=Path(args.db),
         output_path=output_path,
         allowed_orgs=normalize_allowed_orgs(args.allowed_orgs),
-        sanitize=not args.raw,
+        sanitize=sanitize,
     )
     print(f"Exported {result['session_count']} session(s) to {result['output_path']}")
     if result["sanitized"] and result["redactions"]:
         print("  Redactions:")
         for name, count in sorted(result["redactions"].items(), key=lambda x: -x[1]):
             print(f"    {name}: {count}")
+
+
+# ---------------------------------------------------------------------------
+# doctor / config / codex workflow shims
+# ---------------------------------------------------------------------------
+
+
+def _resolve_db_arg(args) -> Path | None:
+    """Resolve --db CLI override, falling back to saved config."""
+    from .config import Config
+
+    explicit = getattr(args, "db", None)
+    if explicit:
+        return Path(explicit)
+    cfg = Config.load()
+    saved = cfg.get("codex.db")
+    if saved:
+        return Path(str(saved))
+    return None
+
+
+def _resolve_base_dir_arg(args) -> Path | None:
+    from .config import Config
+
+    explicit = getattr(args, "base_dir", None)
+    if explicit:
+        return Path(explicit)
+    cfg = Config.load()
+    saved = cfg.get("codex.base_dir")
+    if saved:
+        return Path(str(saved))
+    return None
+
+
+def _resolve_allowed_orgs_arg(args, *, fallback: list[str] | None = None) -> list[str]:
+    from .config import Config
+
+    explicit = getattr(args, "allowed_orgs", None)
+    if explicit:
+        # argparse default lands as PILOT_ALLOWED_GITHUB_ORGS — treat the
+        # default as "no explicit choice" so the saved config can win.
+        if list(explicit) != PILOT_ALLOWED_GITHUB_ORGS:
+            return list(explicit)
+    cfg = Config.load()
+    saved = cfg.get("codex.allowed_orgs")
+    if isinstance(saved, list) and saved:
+        return [str(x) for x in saved]
+    return list(explicit) if explicit else (fallback or PILOT_ALLOWED_GITHUB_ORGS.copy())
+
+
+def cmd_doctor(args):
+    from .doctor import render_report, run_doctor
+
+    db_path = _resolve_db_arg(args)
+    base_dir = _resolve_base_dir_arg(args)
+    report = run_doctor(db_path=db_path, base_dir=base_dir)
+    print(render_report(report))
+    if not report.passed:
+        sys.exit(1)
+
+
+def cmd_config(args):
+    from .config import Config, known_keys_help, parse_value
+
+    cfg = Config.load()
+    action = args.action
+
+    if action == "show":
+        flat = cfg.flat()
+        if not flat:
+            print(f"(no config set yet at {cfg.path})")
+            print()
+            print(known_keys_help())
+            return
+        print(f"# {cfg.path}")
+        for key in sorted(flat):
+            print(f"{key} = {flat[key]!r}")
+        return
+
+    if action == "get":
+        value = cfg.get(args.key)
+        if value is None:
+            sys.exit(1)
+        if isinstance(value, list):
+            for item in value:
+                print(item)
+        else:
+            print(value)
+        return
+
+    if action == "set":
+        try:
+            value = parse_value(args.key, list(args.value))
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            print(known_keys_help(), file=sys.stderr)
+            sys.exit(2)
+        cfg.set(args.key, value)
+        cfg.save()
+        print(f"Saved {args.key} → {value!r} ({cfg.path})")
+        return
+
+    if action == "unset":
+        if cfg.unset(args.key):
+            cfg.save()
+            print(f"Unset {args.key} ({cfg.path})")
+        else:
+            print(f"{args.key} was not set", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if action == "path":
+        print(cfg.path)
+        return
+
+
+def cmd_codex_scan(args):
+    """Friendly alias for `daemon-scan`."""
+    args.db = args.db or str(_resolve_db_arg(args) or (Path.home() / ".skillbench" / "codex_daemon.sqlite3"))
+    args.base_dir = args.base_dir or (str(_resolve_base_dir_arg(args)) if _resolve_base_dir_arg(args) else None)
+    cmd_daemon_scan(args)
+
+
+def cmd_codex_status(args):
+    args.db = args.db or str(_resolve_db_arg(args) or (Path.home() / ".skillbench" / "codex_daemon.sqlite3"))
+    cmd_daemon_status(args)
+
+
+def cmd_codex_watch(args):
+    args.db = args.db or str(_resolve_db_arg(args) or (Path.home() / ".skillbench" / "codex_daemon.sqlite3"))
+    args.base_dir = args.base_dir or (str(_resolve_base_dir_arg(args)) if _resolve_base_dir_arg(args) else None)
+    cmd_daemon_run(args)
+
+
+def cmd_codex_export(args):
+    args.db = args.db or str(_resolve_db_arg(args) or (Path.home() / ".skillbench" / "codex_daemon.sqlite3"))
+    args.allowed_orgs = _resolve_allowed_orgs_arg(args)
+    cmd_daemon_export(args)
+
+
+def cmd_codex_collect(args):
+    from .codex_workflow import cmd_codex_collect as _impl
+
+    args.db = args.db or str(_resolve_db_arg(args) or (Path.home() / ".skillbench" / "codex_daemon.sqlite3"))
+    args.base_dir = args.base_dir or (str(_resolve_base_dir_arg(args)) if _resolve_base_dir_arg(args) else None)
+    args.allowed_orgs = _resolve_allowed_orgs_arg(args)
+    rc = _impl(args)
+    if rc:
+        sys.exit(rc)
+
+
+def cmd_codex_locate_sessions(args):
+    from .codex_workflow import cmd_codex_locate_sessions as _impl
+
+    args.base_dir = args.base_dir or (str(_resolve_base_dir_arg(args)) if _resolve_base_dir_arg(args) else None)
+    rc = _impl(args)
+    if rc:
+        sys.exit(rc)
+
+
+def cmd_codex_plugin_install(args):
+    from .codex_workflow import cmd_codex_plugin_install as _impl
+
+    rc = _impl(args)
+    if rc:
+        sys.exit(rc)
 
 
 # ---------------------------------------------------------------------------
@@ -3341,7 +3518,13 @@ def main():
     de_p.add_argument(
         "--raw",
         action="store_true",
-        help="Write raw normalized daemon sessions without sanitization",
+        help="Write raw normalized daemon sessions without sanitization (requires explicit opt-in)",
+    )
+    de_p.add_argument(
+        "--i-understand-this-may-include-sensitive-data",
+        dest="i_understand_this_may_include_sensitive_data",
+        action="store_true",
+        help="Required acknowledgment to write raw exports without sanitization",
     )
     de_p.add_argument(
         "--allowed-orgs",
@@ -3351,6 +3534,107 @@ def main():
             "Allowed GitHub orgs for repo scope filtering "
             f"(default: {' '.join(PILOT_ALLOWED_GITHUB_ORGS)})"
         ),
+    )
+
+    # doctor
+    doc_p = sub.add_parser("doctor", help="Run a one-shot health check of the SkillBench setup")
+    doc_p.add_argument("--db", help="Path to daemon sqlite database")
+    doc_p.add_argument("--base-dir", help="Override Codex session root to inspect")
+
+    # config
+    cfg_p = sub.add_parser("config", help="View or modify saved skillbench config")
+    cfg_sub = cfg_p.add_subparsers(dest="action", required=True)
+    cfg_show = cfg_sub.add_parser("show", help="Print all saved config values")
+    cfg_path = cfg_sub.add_parser("path", help="Print the active config file path")
+    cfg_get = cfg_sub.add_parser("get", help="Print a single config value")
+    cfg_get.add_argument("key", help="Config key, e.g. codex.allowed_orgs")
+    cfg_set = cfg_sub.add_parser("set", help="Persist a config value")
+    cfg_set.add_argument("key", help="Config key, e.g. codex.allowed_orgs")
+    cfg_set.add_argument("value", nargs="+", help="Value(s); list keys accept multiple args")
+    cfg_unset = cfg_sub.add_parser("unset", help="Remove a saved config value")
+    cfg_unset.add_argument("key", help="Config key, e.g. codex.allowed_orgs")
+
+    # codex (user-friendly aliases over the daemon-* commands)
+    codex_p = sub.add_parser(
+        "codex",
+        help="Codex workflow commands (scan, status, watch, export, collect, ...)",
+    )
+    codex_sub = codex_p.add_subparsers(dest="codex_action", required=True)
+
+    cx_scan = codex_sub.add_parser("scan", help="Scan Codex session files once (alias for daemon-scan)")
+    cx_scan.add_argument("--db", help="Path to daemon sqlite database")
+    cx_scan.add_argument("--base-dir", help="Override Codex session root to scan")
+
+    cx_status = codex_sub.add_parser("status", help="Show Codex daemon status (alias for daemon-status)")
+    cx_status.add_argument("--db", help="Path to daemon sqlite database")
+
+    cx_watch = codex_sub.add_parser("watch", help="Poll Codex session files (alias for daemon-run)")
+    cx_watch.add_argument("--db", help="Path to daemon sqlite database")
+    cx_watch.add_argument("--base-dir", help="Override Codex session root to scan")
+    cx_watch.add_argument("--interval", type=float, default=30.0, help="Polling interval in seconds (default: 30)")
+    cx_watch.add_argument("--iterations", type=int, help="Number of polling loops to run (default: infinite)")
+    cx_watch.add_argument("--once", action="store_true", help="Run exactly one polling loop and exit")
+
+    cx_export = codex_sub.add_parser("export", help="Export sanitized sessions (alias for daemon-export)")
+    cx_export.add_argument("--db", help="Path to daemon sqlite database")
+    cx_export.add_argument("-o", "--output", help="Output file path")
+    cx_export.add_argument("--raw", action="store_true", help="Write raw export (requires explicit opt-in)")
+    cx_export.add_argument(
+        "--i-understand-this-may-include-sensitive-data",
+        dest="i_understand_this_may_include_sensitive_data",
+        action="store_true",
+        help="Required acknowledgment to write raw exports without sanitization",
+    )
+    cx_export.add_argument(
+        "--allowed-orgs",
+        nargs="+",
+        default=PILOT_ALLOWED_GITHUB_ORGS.copy(),
+        help="Allowed GitHub orgs for repo scope filtering",
+    )
+
+    cx_collect = codex_sub.add_parser(
+        "collect",
+        help="One-command happy path: scan + run-once + sanitized export",
+    )
+    cx_collect.add_argument("--db", help="Path to daemon sqlite database")
+    cx_collect.add_argument("--base-dir", help="Override Codex session root to scan")
+    cx_collect.add_argument("-o", "--output", help="Output file path for sanitized export")
+    cx_collect.add_argument("--raw", action="store_true", help="Write raw export (requires explicit opt-in)")
+    cx_collect.add_argument(
+        "--i-understand-this-may-include-sensitive-data",
+        dest="i_understand_this_may_include_sensitive_data",
+        action="store_true",
+        help="Required acknowledgment to write raw exports without sanitization",
+    )
+    cx_collect.add_argument(
+        "--allowed-orgs",
+        nargs="+",
+        default=PILOT_ALLOWED_GITHUB_ORGS.copy(),
+        help="Allowed GitHub orgs for repo scope filtering",
+    )
+
+    cx_loc = codex_sub.add_parser(
+        "locate-sessions",
+        help="Diagnose 'no Codex sessions found' by probing known paths",
+    )
+    cx_loc.add_argument("--base-dir", help="Override Codex session root to inspect")
+
+    cx_plug = codex_sub.add_parser(
+        "plugin-install",
+        help="Clone/refresh the SkillMeter Codex marketplace and register it with Codex",
+    )
+    cx_plug.add_argument(
+        "--target-dir",
+        help="Where to clone the marketplace (default: current directory)",
+    )
+    cx_plug.add_argument(
+        "--marketplace-repo",
+        help="Override marketplace git URL",
+    )
+    cx_plug.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the commands that would run without executing them",
     )
 
     # collect-commits
@@ -3395,6 +3679,28 @@ def main():
         cmd_collect_prs(args)
     elif args.command == "dashboard":
         cmd_dashboard(args)
+    elif args.command == "doctor":
+        cmd_doctor(args)
+    elif args.command == "config":
+        cmd_config(args)
+    elif args.command == "codex":
+        action = args.codex_action
+        if action == "scan":
+            cmd_codex_scan(args)
+        elif action == "status":
+            cmd_codex_status(args)
+        elif action == "watch":
+            cmd_codex_watch(args)
+        elif action == "export":
+            cmd_codex_export(args)
+        elif action == "collect":
+            cmd_codex_collect(args)
+        elif action == "locate-sessions":
+            cmd_codex_locate_sessions(args)
+        elif action == "plugin-install":
+            cmd_codex_plugin_install(args)
+        else:
+            parser.print_help()
     else:
         parser.print_help()
 
