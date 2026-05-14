@@ -104,12 +104,14 @@ step needed.
 | `DAEMON_INTERVAL` | `30` | Poll interval in seconds for `make daemon-run`. |
 | `DAEMON_ITERATIONS` | (unset) | Optional loop count for `make daemon-run`; unset means run until stopped. |
 | `DAEMON_OUTPUT` | (unset) | Optional output path for `make daemon-export`. |
-| `DAEMON_RAW` | `0` | Set `1` to pass `--raw` to `make daemon-export`. |
+| `DAEMON_RAW` | `0` | Set `1` to pass `--raw` to `make daemon-export`. Raw exports also require either `--i-understand-this-may-include-sensitive-data` (passed via `make daemon-export EXTRA_ARGS=...`) or `SKILLBENCH_ALLOW_RAW_EXPORT=1` in the environment. |
 
 ## Codex daemon commands
 
 The daemon commands are Codex-specific. They maintain a local sqlite snapshot of
-normalized Codex sessions so you can ingest continuously and export later.
+normalized Codex sessions so you can ingest continuously and export later. For
+end users we recommend the higher-level `skillbench codex ...` surface (see
+below); the `daemon-*` commands remain for power users and scripts.
 
 | Command | Purpose |
 |---------|---------|
@@ -133,8 +135,84 @@ Notes:
 - State lives in `~/.skillbench/codex_daemon.sqlite3` by default.
 - `daemon-export` applies the same repo-scope allowlist filtering used elsewhere
   in the collector.
-- Use `--raw` with `daemon-export` if you need normalized daemon output without
-  sanitization.
+- Sanitized export is the default. To produce a raw export, pass both `--raw`
+  and `--i-understand-this-may-include-sensitive-data`, or set
+  `SKILLBENCH_ALLOW_RAW_EXPORT=1` in the environment.
+
+## Codex workflow surface (`skillbench codex ...`)
+
+The following commands wrap the daemon primitives in user-friendly names and
+add a one-command happy path. Each `codex` subcommand reads any saved
+defaults from `~/.skillbench/config.json` (see "Saved config" below) and falls
+back to the same defaults the daemon uses.
+
+| Command | Purpose |
+|---------|---------|
+| `skillbench codex scan` | Alias for `daemon-scan` |
+| `skillbench codex status` | Alias for `daemon-status` |
+| `skillbench codex watch` | Alias for `daemon-run` |
+| `skillbench codex export` | Alias for `daemon-export` |
+| `skillbench codex collect` | Scan + run-once + sanitized export in one step |
+| `skillbench codex locate-sessions` | Probe known Codex session roots — diagnoses `scanned=0` |
+| `skillbench codex plugin-install` | Clone/refresh the SkillMeter marketplace and register it with Codex |
+
+Make shortcuts: `make doctor`, `make codex-collect ALLOWED_ORGS="..."`,
+`make codex-locate-sessions`, `make codex-plugin-install`.
+
+## `skillbench doctor`
+
+```bash
+skillbench doctor
+```
+
+A read-only health check that verifies:
+
+- Python version (>= 3.9)
+- `skillbench` CLI is on PATH (warns if you're running it from a checkout)
+- Codex session directories exist (`~/.codex`, `~/.codex-cli`, `~/.openai-codex`)
+- Codex session files were detected
+- The local daemon SQLite database is writable
+- `dist/` is writable
+- Whether a SkillMeter marketplace checkout is available locally
+
+Each failure prints a remediation hint. `skillbench doctor` exits non-zero
+when any required check fails so it can be used in CI/onboarding scripts.
+
+## Saved config (`skillbench config`)
+
+Persistent defaults live at `~/.skillbench/config.json` (override with
+`SKILLBENCH_CONFIG=...`). Supported keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `codex.allowed_orgs` | list of strings | Default `--allowed-orgs` for `codex` commands |
+| `codex.export_path` | string | Default sanitized export path written by `codex collect` |
+| `codex.interval` | int | Default poll interval (seconds) for `codex watch` |
+| `codex.db` | string | Override path to the daemon SQLite database |
+| `codex.base_dir` | string | Override Codex session root directory |
+
+Examples:
+
+```bash
+skillbench config set codex.allowed_orgs your-company your-github-user
+skillbench config get codex.allowed_orgs
+skillbench config show
+skillbench config unset codex.allowed_orgs
+skillbench config path
+```
+
+## One-command installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/install.sh | bash
+```
+
+The installer is also checked into this repo as `install.sh` so you can
+audit it before piping it into `bash`. Environment overrides:
+
+- `SKILLBENCH_REPO_URL` — clone source (default upstream repo)
+- `SKILLBENCH_INSTALL_DIR` — clone target (default `~/.skillbench/session-collector`)
+- `SKILLBENCH_BRANCH` — branch to track (default `main`)
 
 ## Advanced: Manual pipeline (CASS-based)
 

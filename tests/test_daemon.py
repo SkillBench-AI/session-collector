@@ -214,6 +214,7 @@ def test_main_routes_daemon_commands(tmp_path, capsys):
             "--output",
             str(output_path),
             "--raw",
+            "--i-understand-this-may-include-sensitive-data",
         ],
     ):
         skillbench.main()

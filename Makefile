@@ -53,7 +53,7 @@ GH_MOUNTS := \
 # Dynamically computed mounts for real workspace folders referenced by sessions
 WORKSPACE_MOUNTS := $(shell python3 scripts/skillbench_docker_mounts.py 2>/dev/null)
 
-.PHONY: docker-build docker-collect docker-collect-all docker-collect-verbose docker-shell preflight-gh preflight-host daemon-scan daemon-run daemon-status daemon-export
+.PHONY: docker-build docker-collect docker-collect-all docker-collect-verbose docker-shell preflight-gh preflight-host daemon-scan daemon-run daemon-status daemon-export doctor codex-collect codex-locate-sessions codex-plugin-install
 
 # Preflight: check host tooling that the Docker flow needs.
 #
@@ -178,4 +178,23 @@ daemon-export:
 		$(if $(DAEMON_OUTPUT),--output "$(DAEMON_OUTPUT)") \
 		$(if $(ALLOWED_ORGS),--allowed-orgs $(ALLOWED_ORGS)) \
 		$(if $(filter 1 true yes,$(DAEMON_RAW)),--raw)
+
+doctor:
+	@$(SKILLBENCH) doctor \
+		$(if $(DAEMON_DB),--db "$(DAEMON_DB)") \
+		$(if $(DAEMON_BASE_DIR),--base-dir "$(DAEMON_BASE_DIR)")
+
+codex-collect:
+	@$(SKILLBENCH) codex collect \
+		$(if $(DAEMON_DB),--db "$(DAEMON_DB)") \
+		$(if $(DAEMON_BASE_DIR),--base-dir "$(DAEMON_BASE_DIR)") \
+		$(if $(DAEMON_OUTPUT),--output "$(DAEMON_OUTPUT)") \
+		$(if $(ALLOWED_ORGS),--allowed-orgs $(ALLOWED_ORGS))
+
+codex-locate-sessions:
+	@$(SKILLBENCH) codex locate-sessions \
+		$(if $(DAEMON_BASE_DIR),--base-dir "$(DAEMON_BASE_DIR)")
+
+codex-plugin-install:
+	@$(SKILLBENCH) codex plugin-install
 

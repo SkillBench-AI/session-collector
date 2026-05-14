@@ -74,37 +74,130 @@ skillbench collect                                             # all orgs
 skillbench collect --allowed-orgs your-company your-username   # restrict scope
 ```
 
-## Codex daemon
+## Codex workflow (recommended)
 
-For continuous local Codex ingestion, `session-collector` also includes a small
-sqlite-backed daemon workflow that reparses Codex session files when they
-change.
+For Codex users we recommend the high-level `skillbench codex` surface plus
+`skillbench doctor` for setup checks. These wrap the lower-level `daemon-*`
+commands in friendlier names and add a one-command happy path.
 
-One-shot ingest:
+### One-command installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/install.sh | bash
+```
+
+The installer checks for `git`, Python 3.9+, and `pipx`, clones (or refreshes)
+this repository under `~/.skillbench/session-collector`, and runs
+`pipx install --force` so `skillbench` ends up on your PATH.
+
+### Health check
+
+```bash
+skillbench doctor
+```
+
+Verifies Python version, that the CLI is on PATH, that Codex session
+directories exist, that sessions were detected, and that the local SQLite
+database and `dist/` are writable. Each failure includes a remediation hint.
+
+### One-command happy path
+
+```bash
+skillbench codex collect --allowed-orgs your-company your-github-user
+```
+
+Runs scan + a single ingest pass + a sanitized export in one step:
+
+```text
+SkillBench Codex collection complete.
+
+  Scanned sessions:  14
+  Daemon updates:    inserted=8 updated=0 unchanged=0 removed=0 failed=0
+  Exported sessions: 8
+
+  Sanitized export written to:
+    dist/skillbench_daemon_export_sanitized.json
+```
+
+### Friendly aliases
+
+| User-facing command            | Wraps              |
+|-------------------------------|--------------------|
+| `skillbench codex scan`       | `daemon-scan`      |
+| `skillbench codex status`     | `daemon-status`    |
+| `skillbench codex watch`      | `daemon-run`       |
+| `skillbench codex export`     | `daemon-export`    |
+| `skillbench codex collect`    | scan + run-once + sanitized export |
+| `skillbench codex locate-sessions` | diagnose `scanned=0` |
+| `skillbench codex plugin-install`  | clone marketplace + register with Codex |
+
+### Codex plugin install
+
+```bash
+skillbench codex plugin-install
+```
+
+Clones (or refreshes) the SkillMeter Codex marketplace and runs
+`codex plugin marketplace add` for you. After it finishes:
+
+```text
+1. Open Codex
+2. Run /plugins
+3. Install SkillMeter
+4. Start a fresh Codex thread
+5. Try @skillmeter check my collector status
+```
+
+Pass `--dry-run` to see the commands without executing them.
+
+### Saved config
+
+Avoid passing `--allowed-orgs` every time:
+
+```bash
+skillbench config set codex.allowed_orgs your-company your-github-user
+skillbench codex collect          # uses saved orgs automatically
+```
+
+`skillbench config show` prints the current values. The file lives at
+`~/.skillbench/config.json` (override with `SKILLBENCH_CONFIG=...`).
+
+### Troubleshooting `scanned=0`
+
+```bash
+skillbench codex locate-sessions
+```
+
+Probes every well-known Codex session root and reports per-path counts. If
+your sessions are stored elsewhere, point the tooling at them with
+`--base-dir /path/to/codex/sessions` or save it via
+`skillbench config set codex.base_dir /path/to/codex/sessions`.
+
+### Raw exports
+
+Sanitized export is the default. To produce a raw, un-sanitized export you
+must opt in explicitly:
+
+```bash
+skillbench codex export --raw --i-understand-this-may-include-sensitive-data
+SKILLBENCH_ALLOW_RAW_EXPORT=1 skillbench daemon-export --raw
+```
+
+Without the flag (or env var) the CLI refuses to write a raw export.
+
+### Lower-level daemon commands
+
+The original `daemon-*` commands are still available for power users:
 
 ```bash
 skillbench daemon-scan
-skillbench daemon-status
-# or, from this checkout without installing the CLI:
-make daemon-scan
-make daemon-status
-```
-
-Polling loop:
-
-```bash
 skillbench daemon-run --interval 30
-# or:
-make daemon-run DAEMON_INTERVAL=30
-```
-
-Export the daemon state as a shareable file:
-
-```bash
+skillbench daemon-status
 skillbench daemon-export --allowed-orgs your-company your-username
-# or:
-make daemon-export ALLOWED_ORGS="your-company your-username"
 ```
+
+Equivalent Make targets exist (`make daemon-scan`, `make doctor`,
+`make codex-collect ALLOWED_ORGS="..."`, `make codex-plugin-install`).
 
 ## Output & upload
 
