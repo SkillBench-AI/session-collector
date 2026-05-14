@@ -147,6 +147,7 @@ def test_cmd_collect_exports_structured_codex_session(tmp_path):
     session = export[0]
     assert session["session_id"] == "collect-codex-session"
     assert session["agent"] == "codex"
+    assert session["full_fidelity"] is True
     assert session["workspace"] == str(workspace)
     assert session["git_remote"] == "git@github.com:skillbench-ai/codex-smoke.git"
     assert session["source_path"] == "~/.codex/sessions/structured.jsonl"
@@ -320,6 +321,7 @@ def test_cmd_collect_exports_live_codex_tool_events_without_git_repo(tmp_path):
 
     session = export[0]
     assert session["session_id"] == "collect-live-codex"
+    assert session["full_fidelity"] is True
     assert session["git_remote"] == "git@github.com:skillbench-ai/live-codex.git"
     assert [msg["role"] for msg in session["messages"]] == ["assistant", "assistant", "assistant"]
     assert session["messages"][1]["content"][0] == {

@@ -1603,6 +1603,78 @@ def cmd_push(args):
         print("  4. skillbench push       → upload sanitized data")
 
 
+def cmd_daemon_scan(args):
+    """Ingest local Codex session files into daemon state once."""
+    from .daemon import ingest_codex_sessions
+
+    result = ingest_codex_sessions(
+        db_path=Path(args.db),
+        base_dir=Path(args.base_dir) if args.base_dir else None,
+    )
+    print("Codex daemon ingest complete.")
+    print(
+        f"  scanned={result.scanned} inserted={result.inserted} "
+        f"updated={result.updated} unchanged={result.unchanged} "
+        f"failed={result.failed} removed={result.removed}"
+    )
+
+
+def cmd_daemon_run(args):
+    """Run the Codex daemon poll loop."""
+    from .daemon import run_codex_daemon
+
+    iterations = 1 if args.once else args.iterations
+    results = run_codex_daemon(
+        db_path=Path(args.db),
+        base_dir=Path(args.base_dir) if args.base_dir else None,
+        interval_seconds=args.interval,
+        iterations=iterations,
+    )
+    print(f"Codex daemon completed {len(results)} loop(s).")
+    for idx, result in enumerate(results, start=1):
+        print(
+            f"  loop={idx} scanned={result.scanned} inserted={result.inserted} "
+            f"updated={result.updated} unchanged={result.unchanged} "
+            f"failed={result.failed} removed={result.removed}"
+        )
+
+
+def cmd_daemon_status(args):
+    """Print Codex daemon status."""
+    from .daemon import CodexDaemonStore
+
+    status = CodexDaemonStore(Path(args.db)).status()
+    print("Codex daemon status")
+    print(f"  db: {status['db_path']}")
+    print(f"  sessions: {status['session_count']}")
+    print(f"  workspaces: {status['workspace_count']}")
+    print(f"  messages: {status['message_count']}")
+    print(f"  last_scan_at: {status['last_scan_at'] or 'never'}")
+    print(f"  last_ingested_at: {status['last_ingested_at'] or 'never'}")
+
+
+def cmd_daemon_export(args):
+    """Export sessions from daemon state to a JSON file."""
+    from .daemon import export_daemon_sessions
+
+    output_path = (
+        Path(args.output)
+        if args.output
+        else DIST_DIR / "skillbench_daemon_export_sanitized.json"
+    )
+    result = export_daemon_sessions(
+        db_path=Path(args.db),
+        output_path=output_path,
+        allowed_orgs=normalize_allowed_orgs(args.allowed_orgs),
+        sanitize=not args.raw,
+    )
+    print(f"Exported {result['session_count']} session(s) to {result['output_path']}")
+    if result["sanitized"] and result["redactions"]:
+        print("  Redactions:")
+        for name, count in sorted(result["redactions"].items(), key=lambda x: -x[1]):
+            print(f"    {name}: {count}")
+
+
 # ---------------------------------------------------------------------------
 # Direct metrics computation (no CASS dependency)
 # ---------------------------------------------------------------------------
@@ -3216,6 +3288,71 @@ def main():
     # push
     sub.add_parser("push", help="Upload sanitized session data to SkillBench API")
 
+    # daemon-scan
+    ds_p = sub.add_parser("daemon-scan", help="Ingest local Codex session files into daemon state once")
+    ds_p.add_argument(
+        "--db",
+        default=str(Path.home() / ".skillbench" / "codex_daemon.sqlite3"),
+        help="Path to daemon sqlite database",
+    )
+    ds_p.add_argument("--base-dir", help="Override Codex session root to scan")
+
+    # daemon-run
+    dr_p = sub.add_parser("daemon-run", help="Run the Codex daemon poll loop")
+    dr_p.add_argument(
+        "--db",
+        default=str(Path.home() / ".skillbench" / "codex_daemon.sqlite3"),
+        help="Path to daemon sqlite database",
+    )
+    dr_p.add_argument("--base-dir", help="Override Codex session root to scan")
+    dr_p.add_argument(
+        "--interval",
+        type=float,
+        default=30.0,
+        help="Polling interval in seconds (default: 30)",
+    )
+    dr_p.add_argument(
+        "--iterations",
+        type=int,
+        help="Number of polling loops to run (default: infinite)",
+    )
+    dr_p.add_argument(
+        "--once",
+        action="store_true",
+        help="Run exactly one polling loop and exit",
+    )
+
+    # daemon-status
+    dst_p = sub.add_parser("daemon-status", help="Show Codex daemon status")
+    dst_p.add_argument(
+        "--db",
+        default=str(Path.home() / ".skillbench" / "codex_daemon.sqlite3"),
+        help="Path to daemon sqlite database",
+    )
+
+    # daemon-export
+    de_p = sub.add_parser("daemon-export", help="Export daemon-collected Codex sessions")
+    de_p.add_argument(
+        "--db",
+        default=str(Path.home() / ".skillbench" / "codex_daemon.sqlite3"),
+        help="Path to daemon sqlite database",
+    )
+    de_p.add_argument("-o", "--output", help="Output file path")
+    de_p.add_argument(
+        "--raw",
+        action="store_true",
+        help="Write raw normalized daemon sessions without sanitization",
+    )
+    de_p.add_argument(
+        "--allowed-orgs",
+        nargs="+",
+        default=PILOT_ALLOWED_GITHUB_ORGS.copy(),
+        help=(
+            "Allowed GitHub orgs for repo scope filtering "
+            f"(default: {' '.join(PILOT_ALLOWED_GITHUB_ORGS)})"
+        ),
+    )
+
     # collect-commits
     cc_p = sub.add_parser("collect-commits", help="Fetch commit history from GitHub for repos in export")
     cc_p.add_argument("-e", "--export", default=str(DIST_DIR / "skillbench_export_sanitized.json"),
@@ -3244,6 +3381,14 @@ def main():
         cmd_collect(args)
     elif args.command == "push":
         cmd_push(args)
+    elif args.command == "daemon-scan":
+        cmd_daemon_scan(args)
+    elif args.command == "daemon-run":
+        cmd_daemon_run(args)
+    elif args.command == "daemon-status":
+        cmd_daemon_status(args)
+    elif args.command == "daemon-export":
+        cmd_daemon_export(args)
     elif args.command == "collect-commits":
         cmd_collect_commits(args)
     elif args.command == "collect-prs":

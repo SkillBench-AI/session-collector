@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -248,3 +249,54 @@ def test_parse_codex_sessions_scans_recursive_codex_directories(tmp_path):
     assert len(conversations) == 1
     assert conversations[0].session_id == "test-session-id"
     assert conversations[0].workspace == "/home/user/soldier-project"
+
+
+def test_parse_codex_jsonl_logs_malformed_lines(tmp_path, caplog):
+    session_file = tmp_path / "mixed.jsonl"
+    session_file.write_text(
+        "\n".join(
+            [
+                '{"type":"session_meta","payload":{"id":"mixed","cwd":"/tmp/project"}}',
+                "{not json",
+                json.dumps(
+                    {
+                        "timestamp": "2026-04-21T13:33:21.000Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "Still parsed"}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    caplog.set_level(logging.WARNING)
+    conv = _parse_codex_jsonl(session_file)
+
+    assert conv is not None
+    assert conv.session_id == "mixed"
+    assert conv.messages[0].content == [{"type": "text", "text": "Still parsed"}]
+    assert "Skipped 1 malformed Codex JSONL line(s)" in caplog.text
+    assert "first lines: 2" in caplog.text
+
+
+def test_parse_codex_sessions_logs_skipped_malformed_files(tmp_path, caplog):
+    sessions_dir = tmp_path / ".codex" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "bad.json").write_text("{not json")
+    (sessions_dir / "unknown.jsonl").write_text(
+        '{"type":"unknown","payload":{"shape":"drifted"}}\n'
+    )
+
+    caplog.set_level(logging.WARNING)
+    conversations = list(parse_codex_sessions(tmp_path / ".codex"))
+
+    assert conversations == []
+    assert "Skipping Codex JSON file after parse error" in caplog.text
+    assert "bad.json" in caplog.text
+    assert "Skipping Codex JSONL file with no recognized messages" in caplog.text
+    assert "unknown.jsonl" in caplog.text
