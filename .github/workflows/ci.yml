@@ -38,7 +38,7 @@ jobs:
       - name: Shell syntax check (bash -n)
         run: |
           set -euo pipefail
-          for f in collect.sh andela-collect.sh scripts/_docker_run.sh; do
+          for f in install.sh collect.sh andela-collect.sh scripts/_docker_run.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
@@ -79,11 +79,28 @@ jobs:
         run: pytest tests/ -v
 
   # -------------------------------------------------------------------------
+  # package: verify the published artifact can be built before release.
+  # -------------------------------------------------------------------------
+  package:
+    name: Build package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+  # -------------------------------------------------------------------------
   # shell-install: exercise the curl|bash install path end-to-end on a clean
-  # Ubuntu runner. This is the path every pilot user actually follows, so it
-  # earns its own job. We invoke `collect --help` through the script to make
-  # sure pipx install + entry-point resolution all work without touching
-  # real agent data.
+  # Ubuntu runner. CI points SKILLBENCH_PACKAGE at this checkout so the test
+  # does not depend on a package already being published to PyPI.
   # -------------------------------------------------------------------------
   shell-install:
     name: Install flow (collect.sh / andela-collect.sh)
@@ -108,8 +125,11 @@ jobs:
           python -m pipx ensurepath
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Run collect.sh --help (installs via pipx, invokes collect --help)
-        run: bash collect.sh --help
+      - name: Run install.sh (local package override)
+        run: SKILLBENCH_PACKAGE="$PWD" bash install.sh
+
+      - name: Run collect.sh --help (local package override)
+        run: SKILLBENCH_PACKAGE="$PWD" bash collect.sh --help
 
       - name: Verify skillbench is on PATH after collect.sh
         run: |
@@ -121,7 +141,7 @@ jobs:
       - name: Run andela-collect.sh --help
         # Re-uses the already-installed pipx package; confirms the Andela
         # wrapper still feeds `--allowed-orgs` correctly.
-        run: bash andela-collect.sh --help
+        run: SKILLBENCH_PACKAGE="$PWD" bash andela-collect.sh --help
 
   # -------------------------------------------------------------------------
   # docker: build the image and smoke-test the two entry points from inside

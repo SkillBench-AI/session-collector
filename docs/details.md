@@ -208,11 +208,18 @@ curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/mai
 ```
 
 The installer is also checked into this repo as `install.sh` so you can
-audit it before piping it into `bash`. Environment overrides:
+audit it before piping it into `bash`. It installs the published package with
+`pipx` and does not clone the repository. Environment override:
 
-- `SKILLBENCH_REPO_URL` — clone source (default upstream repo)
-- `SKILLBENCH_INSTALL_DIR` — clone target (default `~/.skillbench/session-collector`)
-- `SKILLBENCH_BRANCH` — branch to track (default `main`)
+- `SKILLBENCH_PACKAGE` — pipx package spec (default `skillbench-session-collector`);
+  useful for CI/dev smoke tests with `SKILLBENCH_PACKAGE=/path/to/checkout`.
+
+For direct install/upgrade without the wrapper:
+
+```bash
+pipx install skillbench-session-collector
+pipx upgrade skillbench-session-collector
+```
 
 ## Advanced: Manual pipeline (CASS-based)
 
