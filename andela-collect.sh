@@ -9,8 +9,7 @@ set -e
 # This script installs skillbench via pipx (so `skillbench` is on PATH without
 # venv activate) and runs `skillbench collect --allowed-orgs <Andela pilot orgs>`.
 
-REPO_URL="https://github.com/SkillBench-AI/session-collector.git"
-REPO_DIR="session-collector"
+PACKAGE_SPEC="${SKILLBENCH_PACKAGE:-skillbench-session-collector}"
 MIN_PYTHON_MINOR=9
 ANDELA_ORGS=(andela-technology woven-teams woven-reviews)
 
@@ -39,42 +38,6 @@ echo "============================================================"
 echo "  SkillBench session-collector (Andela pilot)"
 echo "============================================================"
 echo ""
-
-# ----------------------------------------------------------------------------
-# 0. Ensure we're inside a cloned checkout
-# ----------------------------------------------------------------------------
-
-is_session_collector_repo() {
-    # Check for the migrated src-layout entry point. Earlier versions kept
-    # skillbench.py at the repo root; after the packaging refactor it moved to
-    # src/skillbench/__init__.py. We only check the new location — the old
-    # one no longer exists on current main.
-    [ -f "pyproject.toml" ] && [ -f "src/skillbench/__init__.py" ]
-}
-
-if ! is_session_collector_repo; then
-    if ! command -v git &>/dev/null; then
-        fail "git not found." \
-            "Install:" \
-            "  macOS:         brew install git" \
-            "  Debian/Ubuntu: sudo apt install git"
-    fi
-    if [ -d "$REPO_DIR/.git" ]; then
-        step "Repository already cloned. Updating..."
-        git -C "$REPO_DIR" pull --ff-only || true
-    elif [ -d "$REPO_DIR" ]; then
-        fail "'$REPO_DIR' exists but is not a git repository." \
-            "Remove it or choose a different working directory."
-    else
-        step "Cloning SkillBench session-collector..."
-        git clone --depth 1 "$REPO_URL" "$REPO_DIR"
-    fi
-    cd "$REPO_DIR"
-    ok "Repository ready: $(pwd)"
-    echo ""
-fi
-
-REPO_ROOT="$(pwd)"
 
 # ----------------------------------------------------------------------------
 # 1. Find Python 3.9+
@@ -122,12 +85,8 @@ ok "pipx found"
 # 3. Install / upgrade skillbench via pipx
 # ----------------------------------------------------------------------------
 
-step "Installing skillbench via pipx..."
-if pipx list --short 2>/dev/null | awk '{print $1}' | grep -qx skillbench; then
-    pipx install --force --python "$PYTHON" "$REPO_ROOT" >/dev/null
-else
-    pipx install --python "$PYTHON" "$REPO_ROOT" >/dev/null
-fi
+step "Installing skillbench via pipx from: $PACKAGE_SPEC"
+pipx install --force --python "$PYTHON" "$PACKAGE_SPEC" >/dev/null
 
 SKILLBENCH_BIN="$(command -v skillbench || true)"
 if [ -z "$SKILLBENCH_BIN" ]; then
@@ -204,7 +163,7 @@ echo "  Done."
 echo "============================================================"
 echo ""
 echo "  Installed command : $SKILLBENCH_BIN"
-echo "  Repo checkout     : $REPO_ROOT"
+echo "  Package source    : $PACKAGE_SPEC"
 echo ""
 echo "  To re-run later (exactly as just now):"
 # `printf '%q'` escapes each argument so the printed command round-trips

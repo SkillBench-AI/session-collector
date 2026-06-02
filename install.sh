@@ -6,15 +6,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/SkillBench-AI/session-collector/main/install.sh | bash
 #
 # The installer is intentionally conservative: it never sudo's, never
-# touches your shell rc files (pipx ensurepath does that, with prompts),
-# and clones into ~/.skillbench/session-collector by default so multiple
-# runs are idempotent.
+# touches your shell rc files (pipx ensurepath does that, with prompts), and
+# installs the published package via pipx so no repository checkout is needed.
 
 set -Eeuo pipefail
 
-REPO_URL="${SKILLBENCH_REPO_URL:-https://github.com/SkillBench-AI/session-collector.git}"
-INSTALL_DIR="${SKILLBENCH_INSTALL_DIR:-${HOME}/.skillbench/session-collector}"
-BRANCH="${SKILLBENCH_BRANCH:-main}"
+PACKAGE_SPEC="${SKILLBENCH_PACKAGE:-skillbench-session-collector}"
 
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -34,7 +31,6 @@ require_or_install() {
 bold "SkillBench session-collector — one-command install"
 echo
 
-require_or_install git    "Install git from https://git-scm.com/downloads"
 require_or_install python3 "Install Python 3.9+ — macOS: brew install python | Debian/Ubuntu: sudo apt install python3"
 
 PY_OK=$(python3 -c 'import sys; print(1 if sys.version_info >= (3, 9) else 0)')
@@ -64,19 +60,9 @@ else
     PIPX="pipx"
 fi
 
-mkdir -p "$(dirname "$INSTALL_DIR")"
-
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-    bold "Updating existing checkout at $INSTALL_DIR"
-    git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH"
-    git -C "$INSTALL_DIR" reset --hard "origin/${BRANCH}"
-else
-    bold "Cloning $REPO_URL → $INSTALL_DIR"
-    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
-fi
-
 bold "Installing skillbench via pipx"
-$PIPX install --force "$INSTALL_DIR"
+echo "  package: $PACKAGE_SPEC"
+$PIPX install --force "$PACKAGE_SPEC"
 
 echo
 if command -v skillbench >/dev/null 2>&1; then

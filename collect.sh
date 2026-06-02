@@ -7,14 +7,12 @@ set -e
 #   bash collect.sh [skillbench collect options]
 #
 # This script:
-#   1) Ensures the session-collector repo is cloned locally (handles `curl | bash`)
-#   2) Installs skillbench via pipx so the `skillbench` command is on PATH globally
+#   1) Installs skillbench via pipx so the `skillbench` command is on PATH globally
 #      (no venv activate required)
-#   3) Runs `skillbench collect`
-#   4) Prints a clear re-run command so you never need to remember the env
+#   2) Runs `skillbench collect`
+#   3) Prints a clear re-run command so you never need to remember the env
 
-REPO_URL="https://github.com/SkillBench-AI/session-collector.git"
-REPO_DIR="session-collector"
+PACKAGE_SPEC="${SKILLBENCH_PACKAGE:-skillbench-session-collector}"
 MIN_PYTHON_MINOR=9
 
 # --- Formatting helpers (match Makefile preflight style) -----------------
@@ -42,50 +40,6 @@ echo "============================================================"
 echo "  SkillBench session-collector"
 echo "============================================================"
 echo ""
-
-# ----------------------------------------------------------------------------
-# 0. Ensure we're sitting inside a cloned session-collector checkout
-# ----------------------------------------------------------------------------
-
-is_session_collector_repo() {
-    # Check for the migrated src-layout entry point. Earlier versions kept
-    # skillbench.py at the repo root; after the packaging refactor it moved to
-    # src/skillbench/__init__.py. We only check the new location — the old
-    # one no longer exists on current main.
-    [ -f "pyproject.toml" ] && [ -f "src/skillbench/__init__.py" ]
-}
-
-if ! is_session_collector_repo; then
-    if ! command -v git &>/dev/null; then
-        fail "git not found." \
-            "Install:" \
-            "  macOS:         brew install git" \
-            "  Debian/Ubuntu: sudo apt install git"
-    fi
-    if [ -d "$REPO_DIR/.git" ]; then
-        step "Repository already cloned. Updating..."
-        # Surface pull errors (network, divergence, non-ff) instead of
-        # continuing silently on a stale checkout. If the user has local
-        # changes, they can resolve by deleting $REPO_DIR and re-running.
-        if ! git -C "$REPO_DIR" pull --ff-only; then
-            fail "\`git pull --ff-only\` failed in '$REPO_DIR'." \
-                "The checkout may be stale or diverged from origin." \
-                "Fix manually, or remove the directory and re-run:" \
-                "  rm -rf '$REPO_DIR' && bash collect.sh"
-        fi
-    elif [ -d "$REPO_DIR" ]; then
-        fail "'$REPO_DIR' exists but is not a git repository." \
-            "Remove it or choose a different working directory."
-    else
-        step "Cloning SkillBench session-collector..."
-        git clone --depth 1 "$REPO_URL" "$REPO_DIR"
-    fi
-    cd "$REPO_DIR"
-    ok "Repository ready: $(pwd)"
-    echo ""
-fi
-
-REPO_ROOT="$(pwd)"
 
 # ----------------------------------------------------------------------------
 # 1. Find Python 3.9+
@@ -152,13 +106,8 @@ fi
 # 4. Install / upgrade skillbench via pipx
 # ----------------------------------------------------------------------------
 
-step "Installing skillbench via pipx..."
-if pipx list --short 2>/dev/null | awk '{print $1}' | grep -qx skillbench; then
-    # Upgrade an already-installed pipx package in-place from this checkout.
-    pipx install --force --python "$PYTHON" "$REPO_ROOT" >/dev/null
-else
-    pipx install --python "$PYTHON" "$REPO_ROOT" >/dev/null
-fi
+step "Installing skillbench via pipx from: $PACKAGE_SPEC"
+pipx install --force --python "$PYTHON" "$PACKAGE_SPEC" >/dev/null
 
 SKILLBENCH_BIN="$(command -v skillbench || true)"
 if [ -z "$SKILLBENCH_BIN" ]; then
@@ -238,7 +187,7 @@ echo "  Done."
 echo "============================================================"
 echo ""
 echo "  Installed command : $SKILLBENCH_BIN"
-echo "  Repo checkout     : $REPO_ROOT"
+echo "  Package source    : $PACKAGE_SPEC"
 echo ""
 echo "  To re-run later (exactly as just now):"
 # `printf '%q'` escapes each argument so the printed command round-trips
