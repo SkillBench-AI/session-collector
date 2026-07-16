@@ -33,9 +33,24 @@ from typing import Callable
 PATTERNS: list[tuple[str, re.Pattern, str]] = [
     # === API Keys & Tokens ===
     (
+        # AWS access key id. Beyond long-term AKIA keys this covers temporary /
+        # STS credential prefixes (ASIA), and the other documented id prefixes
+        # (AIDA/AGPA/AROA/ANPA/ANVA). Mirrors the Codex aws_access_key detector.
         "aws_key",
-        re.compile(r"AKIA[0-9A-Z]{16}", re.ASCII),
+        re.compile(r"\bA(?:KIA|SIA|IDA|GPA|ROA|NPA|NVA)[A-Z0-9]{16}\b", re.ASCII),
         "[REDACTED_AWS_KEY]",
+    ),
+    (
+        # JSON Web Token (header.payload.signature, base64url segments).
+        "jwt",
+        re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b"),
+        "[REDACTED_JWT]",
+    ),
+    (
+        # Google API key.
+        "google_api_key",
+        re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
+        "[REDACTED_GOOGLE_KEY]",
     ),
     (
         "aws_secret",
@@ -43,8 +58,11 @@ PATTERNS: list[tuple[str, re.Pattern, str]] = [
         "[REDACTED_AWS_SECRET]",
     ),
     (
+        # Classic/OAuth/user/server/refresh tokens (ghp_/gho_/ghu_/ghs_/ghr_)
+        # plus fine-grained PATs. Length bounds widened to match Codex so
+        # shorter fine-grained PATs are not missed.
         "github_token",
-        re.compile(r"(ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghu_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})"),
+        re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\b"),
         "[REDACTED_GITHUB_TOKEN]",
     ),
     (
@@ -53,8 +71,11 @@ PATTERNS: list[tuple[str, re.Pattern, str]] = [
         "[REDACTED_ANTHROPIC_KEY]",
     ),
     (
+        # OpenAI / Anthropic style keys (sk-, sk-proj-, sk-ant-…). Mirrors the
+        # Codex api_key detector so shorter sk-ant-/sk-proj- keys that fall
+        # under the anthropic_key length floor above are still caught.
         "openai_key",
-        re.compile(r"sk-[A-Za-z0-9]{20,}(?:-[A-Za-z0-9]+)*"),
+        re.compile(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}\b"),
         "[REDACTED_OPENAI_KEY]",
     ),
     (
@@ -86,14 +107,14 @@ PATTERNS: list[tuple[str, re.Pattern, str]] = [
     ),
     (
         "authorization_header",
-        re.compile(r"(Authorization:\s*)[^\n]{20,}", re.IGNORECASE),
+        re.compile(r"((?:Proxy-)?Authorization:\s*)[^\n]{20,}", re.IGNORECASE),
         r"\1[REDACTED_AUTH_HEADER]",
     ),
 
     # === SSH keys ===
     (
         "ssh_private_key",
-        re.compile(r"-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----"),
+        re.compile(r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"),
         "[REDACTED_PRIVATE_KEY]",
     ),
 
