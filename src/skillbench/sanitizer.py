@@ -23,6 +23,14 @@ from pathlib import Path
 from typing import Callable
 
 
+# Sanitization policy version. Bumped when the detector set or redaction
+# behavior changes so downstream consumers can reason about which rules a
+# record was scrubbed under. Kept in lockstep with the Codex/Claude collectors'
+# POLICY_VERSION ("1.0.0") so a version string means the same thing across
+# every client surface.
+POLICY_VERSION = "1.0.0"
+
+
 # ---------------------------------------------------------------------------
 # Redaction patterns
 # ---------------------------------------------------------------------------
@@ -186,9 +194,9 @@ class Sanitizer:
             return text
 
         for name, pattern, replacement in self.patterns:
-            new_text = pattern.sub(replacement, text)
-            if new_text != text:
-                self.stats[name] = self.stats.get(name, 0) + 1
+            new_text, n = pattern.subn(replacement, text)
+            if n:
+                self.stats[name] = self.stats.get(name, 0) + n
                 text = new_text
 
         return text
@@ -232,13 +240,33 @@ class Sanitizer:
         known fields remain covered because they are string leaves reached by
         the same walk. A tiny allow-list of structural top-level fields
         (``STRUCTURAL_FIELDS``) is passed through untouched.
+
+        When any redaction occurs, a compact ``_sanitization`` summary is
+        attached to the record (policy version + counts by detector type,
+        never original values), mirroring the Codex per-record ``_sanitization``
+        meta stamped on uploaded events.
         """
         if not isinstance(session, dict):
             return self._sanitize_value(session)
-        return {
+
+        before = dict(self.stats)
+        result = {
             key: value if key in self.STRUCTURAL_FIELDS else self._sanitize_value(value)
             for key, value in session.items()
         }
+
+        counts = {
+            name: self.stats[name] - before.get(name, 0)
+            for name in self.stats
+            if self.stats[name] - before.get(name, 0) > 0
+        }
+        if counts:
+            result["_sanitization"] = {
+                "policy_version": POLICY_VERSION,
+                "counts": counts,
+                "total": sum(counts.values()),
+            }
+        return result
 
     def sanitize_export(self, sessions: list[dict]) -> list[dict]:
         """Sanitize a full export (list of session dicts)."""
