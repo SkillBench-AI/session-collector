@@ -27,6 +27,11 @@ Redacted patterns include:
 
 A summary of what was redacted is printed after collection.
 
+Home directory paths are replaced with a readable `~` rather than hashed, so
+you can review exactly which files and projects appear in the export before
+sharing it. (This is a deliberate divergence from the auto-uploading Claude/Codex
+plugins, which hash path fields; see SANITIZATION_EPIC.md, Open Decision #7.)
+
 ## Additional guarantees
 
 - **No telemetry, no auto-sync.** No background uploads, no analytics.

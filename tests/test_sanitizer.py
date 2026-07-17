@@ -95,6 +95,30 @@ def test_sanitize_session_preserves_known_field_behavior():
     assert sanitized["count"] == 7
 
 
+def test_home_path_normalized_to_tilde_not_hashed():
+    """Per Open Decision #7, home paths are rewritten to a readable ``~`` and
+    NOT HMAC-hashed like the Claude/Codex collectors — the export stays
+    human-reviewable. Only the home prefix is rewritten; the rest is kept."""
+    home = str(Path.home())
+    sanitizer = Sanitizer()
+
+    out = sanitizer.sanitize_text(f"opened {home}/project/src/app.py")
+
+    assert out == "opened ~/project/src/app.py"
+    # Divergence guard: no opaque hash token, the readable tail survives.
+    assert home not in out
+    assert "project/src/app.py" in out
+    assert sanitizer.stats.get("home_dir") == 1
+
+
+def test_home_redaction_can_be_disabled():
+    """redact_home=False leaves paths untouched (used by content-only callers)."""
+    home = str(Path.home())
+    sanitizer = Sanitizer(redact_home=False)
+    text = f"{home}/project/app.py"
+    assert sanitizer.sanitize_text(text) == text
+
+
 def test_sanitize_session_attaches_per_record_redaction_metadata():
     """A redacted record carries policy_version + counts by type, no values."""
     sanitizer = Sanitizer(redact_home=False)
