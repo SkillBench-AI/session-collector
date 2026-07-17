@@ -163,7 +163,19 @@ PATTERNS: list[tuple[str, re.Pattern, str]] = [
 ]
 
 
-# Home directory pattern — built dynamically per user
+# Home directory pattern — built dynamically per user.
+#
+# Home paths are normalized to a literal ``~`` (only the home prefix is
+# rewritten; the rest of the path stays readable). This intentionally diverges
+# from the Claude/Codex collectors, which HMAC-hash path fields with a shared
+# per-device salt to make the same path correlatable across surfaces.
+#
+# The divergence is deliberate (see SANITIZATION_EPIC.md, Open Decision #7,
+# 2026-07): the session collector is a review-before-share tool — users inspect
+# the sanitized export and choose what to share (docs/privacy.md) — so a
+# human-readable ``~/project/...`` path is a feature, whereas an opaque HMAC
+# token would make the export unreviewable. Cross-surface correlation is
+# device-local only and low-value here, and this tool has no salt provisioning.
 def _home_dir_pattern() -> tuple[str, re.Pattern, str]:
     home = str(Path.home())
     return (
