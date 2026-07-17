@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from .sanitizer import Sanitizer
+from .sanitizer import POLICY_VERSION, Sanitizer
 from .session_parser import (
     Conversation,
     _parse_codex_json,
@@ -365,5 +365,6 @@ def export_daemon_sessions(
         "output_path": str(output_path),
         "session_count": len(output_sessions),
         "sanitized": sanitize,
+        "policy_version": POLICY_VERSION if sanitize else None,
         "redactions": dict(sanitizer.stats) if sanitizer else {},
     }

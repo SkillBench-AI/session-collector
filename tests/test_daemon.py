@@ -111,6 +111,11 @@ def test_export_daemon_sessions_filters_by_allowed_orgs_and_sanitizes(tmp_path):
 
     export = json.loads(output_path.read_text())
     assert result["session_count"] == 1
+    # Envelope carries the policy version alongside redaction counts.
+    assert result["policy_version"] == "1.0.0"
+    assert isinstance(result["redactions"], dict)
+    # File stays a parseable top-level list for the analysis pipeline.
+    assert isinstance(export, list)
     assert len(export) == 1
     assert export[0]["full_fidelity"] is True
     assert export[0]["git_remote"] == "git@github.com:skillbench-ai/live-codex.git"

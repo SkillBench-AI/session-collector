@@ -1,9 +1,10 @@
+import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from skillbench.sanitizer import Sanitizer  # noqa: E402
+from skillbench.sanitizer import POLICY_VERSION, Sanitizer  # noqa: E402
 
 
 def test_sanitizer_recursively_redacts_nested_tool_blocks():
@@ -92,3 +93,45 @@ def test_sanitize_session_preserves_known_field_behavior():
     # git_remote is a structural field kept verbatim for org attribution.
     assert sanitized["git_remote"] == "git@github.com:skillbench-ai/repo.git"
     assert sanitized["count"] == 7
+
+
+def test_sanitize_session_attaches_per_record_redaction_metadata():
+    """A redacted record carries policy_version + counts by type, no values."""
+    sanitizer = Sanitizer(redact_home=False)
+    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    session = {
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": f"tok {secret}"}]},
+            {"role": "user", "content": [{"type": "text", "text": "email me@example.com"}]},
+        ],
+    }
+
+    sanitized = sanitizer.sanitize_session(session)
+    meta = sanitized["_sanitization"]
+
+    assert meta["policy_version"] == POLICY_VERSION
+    # Counts are keyed by detector type; two distinct detectors fired once each.
+    assert meta["counts"] == {"github_token": 1, "email": 1}
+    assert meta["total"] == 2
+    # No original secret value anywhere in the metadata.
+    assert secret not in json.dumps(meta)
+    assert "me@example.com" not in json.dumps(meta)
+
+
+def test_sanitize_session_omits_metadata_when_nothing_redacted():
+    """Clean records get no _sanitization key (mirrors Codex tier1||tier2 gate)."""
+    sanitizer = Sanitizer(redact_home=False)
+    sanitized = sanitizer.sanitize_session({"title": "just a plain title", "n": 1})
+    assert "_sanitization" not in sanitized
+
+
+def test_per_record_counts_are_independent_across_sessions():
+    """Per-record counts reflect only that record, not the running total."""
+    sanitizer = Sanitizer(redact_home=False)
+    s1 = {"title": "a@example.com"}
+    s2 = {"title": "b@example.com and c@example.com"}
+
+    out = sanitizer.sanitize_export([s1, s2])
+
+    assert out[0]["_sanitization"]["counts"] == {"email": 1}
+    assert out[1]["_sanitization"]["counts"] == {"email": 2}
