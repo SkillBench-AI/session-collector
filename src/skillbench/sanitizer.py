@@ -214,29 +214,31 @@ class Sanitizer:
             return {key: self._sanitize_value(item) for key, item in value.items()}
         return value
 
+    # Top-level fields kept verbatim rather than content-sanitized. These are
+    # structural, non-secret metadata that downstream analysis depends on:
+    # git_remote drives org-scope attribution (see daemon.py) and its SCP-form
+    # value (git@host:org/repo) would otherwise be mangled by the email
+    # detector. Kept deliberately tiny — anything not listed is fully walked.
+    STRUCTURAL_FIELDS: frozenset[str] = frozenset({"git_remote"})
+
     def sanitize_session(self, session: dict) -> dict:
-        """Sanitize a full session dict."""
-        result = dict(session)
+        """Sanitize a full session dict.
 
-        # Sanitize messages
-        if "messages" in result:
-            result["messages"] = [
-                self.sanitize_message(m) for m in result["messages"]
-            ]
-
-        # Sanitize workspace path
-        if "workspace" in result and isinstance(result["workspace"], str):
-            result["workspace"] = self.sanitize_text(result["workspace"])
-
-        # Sanitize title
-        if "title" in result and isinstance(result["title"], str):
-            result["title"] = self.sanitize_text(result["title"])
-
-        # Sanitize source_path
-        if "source_path" in result and isinstance(result["source_path"], str):
-            result["source_path"] = self.sanitize_text(result["source_path"])
-
-        return result
+        Walks the entire session recursively and sanitizes every string leaf,
+        rather than scrubbing a fixed set of known fields. This mirrors the
+        Codex ``redactDeep`` / Claude ``scrubDeep`` boundary so that any
+        other, nested, or future session field leaves the machine sanitized —
+        not just ``messages``/``workspace``/``title``/``source_path``. Those
+        known fields remain covered because they are string leaves reached by
+        the same walk. A tiny allow-list of structural top-level fields
+        (``STRUCTURAL_FIELDS``) is passed through untouched.
+        """
+        if not isinstance(session, dict):
+            return self._sanitize_value(session)
+        return {
+            key: value if key in self.STRUCTURAL_FIELDS else self._sanitize_value(value)
+            for key, value in session.items()
+        }
 
     def sanitize_export(self, sessions: list[dict]) -> list[dict]:
         """Sanitize a full export (list of session dicts)."""
