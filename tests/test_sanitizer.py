@@ -2,9 +2,51 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from skillbench.sanitizer import POLICY_VERSION, Sanitizer  # noqa: E402
+
+
+# --- Shared cross-surface secret-fixture parity corpus ---------------------
+# Loads the vendored copy of skillbench-docs/eval/secret-corpus/corpus.json and
+# asserts every fixture is redacted. Tier-1 misses fail CI (blocks merge), so
+# Tier-1 recall can't silently diverge from the Codex / Claude sanitizers.
+# See SANITIZATION_EPIC.md Task 5.2.
+_CORPUS = json.loads(
+    (Path(__file__).parent / "fixtures" / "secret-corpus.json").read_text()
+)
+
+
+def _build_corpus_value(parts: list[str]) -> str:
+    hi = _CORPUS["hi"]
+    return "".join(
+        hi[: int(p[2:])] if p[:2] == "HI" and p[2:].isdigit() else p for p in parts
+    )
+
+
+def test_shared_corpus_version_and_size_guard():
+    """Guard against silently shrinking the shared corpus to make tests pass."""
+    assert _CORPUS["version"] == "1", "corpus version changed — re-sync all repo copies"
+    tier1 = [f for f in _CORPUS["fixtures"] if f["tier"] == "tier1"]
+    assert len(tier1) >= 12, f"expected >= 12 Tier-1 fixtures, got {len(tier1)}"
+    assert any(f["tier"] == "tier2" for f in _CORPUS["fixtures"])
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    _CORPUS["fixtures"],
+    ids=[f"{f['tier']}-{f['id']}" for f in _CORPUS["fixtures"]],
+)
+def test_shared_corpus_fixture_is_redacted(fixture):
+    """Every shared-corpus fixture must be redacted by the session collector."""
+    secret = _build_corpus_value(fixture["parts"])
+    sanitizer = Sanitizer(redact_home=False)
+    out = sanitizer.sanitize_text(f"prefix {secret} suffix")
+
+    assert secret not in out, f"{fixture['id']}: raw secret survived sanitization"
+    assert sanitizer.stats, f"{fixture['id']}: expected a redaction event"
 
 
 def test_sanitizer_recursively_redacts_nested_tool_blocks():
