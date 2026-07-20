@@ -20,17 +20,21 @@ _CORPUS = json.loads(
 
 
 def _build_corpus_value(parts: list[str]) -> str:
-    hi = _CORPUS["hi"]
-    return "".join(
-        hi[: int(p[2:])] if p[:2] == "HI" and p[2:].isdigit() else p for p in parts
-    )
+    def expand(p: str) -> str:
+        if p[:2] == "HI" and p[2:].isdigit():
+            return _CORPUS["hi"][: int(p[2:])]
+        if p[:2] == "HX" and p[2:].isdigit():
+            return _CORPUS["hex"][: int(p[2:])]
+        return p
+
+    return "".join(expand(p) for p in parts)
 
 
 def test_shared_corpus_version_and_size_guard():
     """Guard against silently shrinking the shared corpus to make tests pass."""
     assert _CORPUS["version"] == "1", "corpus version changed — re-sync all repo copies"
     tier1 = [f for f in _CORPUS["fixtures"] if f["tier"] == "tier1"]
-    assert len(tier1) >= 12, f"expected >= 12 Tier-1 fixtures, got {len(tier1)}"
+    assert len(tier1) >= 24, f"expected >= 24 Tier-1 fixtures, got {len(tier1)}"
     assert any(f["tier"] == "tier2" for f in _CORPUS["fixtures"])
 
 
