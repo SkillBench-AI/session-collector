@@ -17,6 +17,7 @@ Handles:
 """
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -26,9 +27,9 @@ from typing import Callable
 # Sanitization policy version. Bumped when the detector set or redaction
 # behavior changes so downstream consumers can reason about which rules a
 # record was scrubbed under. Kept in lockstep with the Codex/Claude collectors'
-# POLICY_VERSION ("1.0.0") so a version string means the same thing across
-# every client surface.
-POLICY_VERSION = "1.0.0"
+# POLICY_VERSION so a version string means the same thing across every client
+# surface. "2.0.0" adds entropy gating + keyword pre-filtering to match Claude.
+POLICY_VERSION = "2.0.0"
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +293,62 @@ def _is_secret_key(key: str) -> bool:
     return any(p.search(key) for p in SECRET_KEY_PATTERNS)
 
 
+def _shannon_entropy(s: str) -> float:
+    """Shannon entropy in bits per character. Detectors with an entropy floor
+    use this to reject low-entropy false positives, matching Claude's gating."""
+    if not s:
+        return 0.0
+    counts: dict[str, int] = {}
+    for ch in s:
+        counts[ch] = counts.get(ch, 0) + 1
+    n = len(s)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+# Per-detector gating that mirrors the Claude ruleset so every surface behaves
+# identically. Keyed by the detector name in PATTERNS.
+#   _KEYWORDS: lowercase mandatory substrings drawn from the detector's own
+#     regex prefixes — a cheap pre-filter; the detector is skipped when none is
+#     present (recall-neutral).
+#   _ENTROPY_FLOORS: Shannon floor (bits/char); a candidate below it is left in
+#     place as a likely false positive.
+# Catch-alls unique to this collector (generic_api_key, bearer_token,
+# password_in_url, aws_secret, private_ip) are intentionally ungated so they
+# stay maximally fail-closed.
+_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "aws_key": ("akia", "asia", "aida", "agpa", "aroa", "anpa", "anva"),
+    "jwt": ("eyj",),
+    "google_api_key": ("aiza",),
+    "google_oauth_client": ("googleusercontent",),
+    "github_token": ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"),
+    "gitlab_pat": ("glpat-",),
+    "anthropic_key": ("sk-ant-",),
+    "openai_key": ("sk-",),
+    "stripe_key": ("sk_", "rk_"),
+    "sendgrid_key": ("sg.",),
+    "mailgun_key": ("key-",),
+    "slack_token": ("xox",),
+    "slack_webhook": ("hooks.slack.com",),
+    "npm_token": ("npm_",),
+    "pypi_token": ("pypi-ageichlwas",),
+    "digitalocean_token": ("doo_v1_", "dop_v1_", "dor_v1_", "dov_v1_"),
+    "hashicorp_vault_token": ("hvb.", "hvs."),
+    "authorization_header": ("authorization",),
+    "ssh_private_key": ("-----begin",),
+    "db_connection_string": ("://",),
+    "basic_auth_url": ("://",),
+}
+
+_ENTROPY_FLOORS: dict[str, float] = {
+    "github_token": 3.0,
+    "openai_key": 3.0,
+    "aws_key": 3.0,
+    "twilio_key": 3.0,
+    "mailgun_key": 3.0,
+    "env_secret": 3.0,
+}
+
+
 # Home directory pattern — built dynamically per user.
 #
 # Home paths are normalized to a literal ``~`` (only the home prefix is
@@ -343,11 +400,22 @@ class Sanitizer:
             return text
 
         for name, pattern, replacement, value in self.patterns:
+            # Keyword pre-filter: skip the detector unless a cheap mandatory
+            # substring is present (perf; recall-neutral).
+            keywords = _KEYWORDS.get(name)
+            if keywords:
+                lowered = text.lower()
+                if not any(k in lowered for k in keywords):
+                    continue
+            floor = _ENTROPY_FLOORS.get(name)
 
-            def _repl(m, name=name, replacement=replacement, value=value):
+            def _repl(m, name=name, replacement=replacement, value=value, floor=floor):
                 full = m.group(0)
                 candidate = full if value == "whole" else (m.group(value) or "")
                 if _is_placeholder(candidate):
+                    return full
+                # Entropy gate: reject low-entropy false positives.
+                if floor is not None and _shannon_entropy(candidate) < floor:
                     return full
                 self.stats[name] = self.stats.get(name, 0) + 1
                 if value == "whole":
