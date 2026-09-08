@@ -153,6 +153,6 @@ exec docker run --rm $TTY_FLAG \
     ${GITHUB_TOKEN:+-e GITHUB_TOKEN} \
     ${SKILLBENCH_DEBUG:+-e SKILLBENCH_DEBUG} \
     -v "$(pwd):/work" -w /work \
-    "${MOUNTS[@]}" \
+    ${MOUNTS[@]+"${MOUNTS[@]}"} \
     "$IMAGE" \
-    python3 -m skillbench collect "${COLLECT_ARGS[@]}"
+    python3 -m skillbench collect ${COLLECT_ARGS[@]+"${COLLECT_ARGS[@]}"}
